@@ -11,7 +11,7 @@ BASE_DIR = r"G:\expo\Software\Dailies\Dailies\dailies\sessions"
 if not os.path.exists(BASE_DIR):
     os.makedirs(BASE_DIR)
 
-class NoteApp:
+class DailiesApp:
     def __init__(self, root):
         self.root = root
         self.root.title("dailies")
@@ -164,6 +164,6 @@ class NoteApp:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = NoteApp(root)
+    app = DailiesApp(root)
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
     root.mainloop()
