@@ -6,6 +6,7 @@ import pyautogui
 from datetime import datetime
 import os
 import logging
+import webbrowser
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -27,6 +28,20 @@ class DailiesApp:
         os.makedirs(self.session_dir, exist_ok=True)
         logger.debug("Agent X: Base of operations established at %s", self.session_dir)
         logger.info("Session directory initialized: %s", self.session_dir)
+
+        # Store notes in memory
+        self.notes = []
+
+        # Task colors (rainbow + gray for default)
+        self.task_colors = {
+            "code": "#ff0000",      # Red
+            "research": "#ff8000",  # Orange
+            "building": "#ffff00",  # Yellow
+            "meeting": "#00ff00",   # Green
+            "field": "#0000ff",     # Blue
+            "social": "#800080",    # Purple
+            "default": "#808080"    # Gray
+        }
 
         self.task_frame = tk.Frame(root)
         self.task_frame.pack(pady=10)
@@ -116,34 +131,35 @@ class DailiesApp:
         timestamp = datetime.now().strftime("%H:%M:%S")
         logger.debug("Agent X: Securing intel drop in %s sector.", task)
 
-        # Single HTML file for all notes
+        # Store note in memory
+        self.notes.append({"task": task, "timestamp": timestamp, "content": note})
+
+        # Write all notes to HTML
         note_filename_html = os.path.join(self.session_dir, "notes.html")
-        html_entry = f'<div class="note" data-task="{task}"><p><strong>{timestamp}</strong> [{task}]: {note}</p></div>\n'
-        if not os.path.exists(note_filename_html):
-            with open(note_filename_html, "w") as f:
-                f.write('<html><head><style>')
-                f.write('body { font-family: Arial, sans-serif; margin: 20px; }')
-                f.write('h2 { color: #666; }')
-                f.write('.note { margin: 5px 0; padding: 5px; border-left: 3px solid #00cccc; color: #333; }')
-                f.write('.task-group { margin-bottom: 20px; }')
-                f.write('</style></head><body>\n<h2>Notes for {self.today}</h2>\n')
-                logger.info("Initialized HTML file: %s", note_filename_html)
-        with open(note_filename_html, "a") as f:
-            f.write(html_entry)
-            logger.info("Appended note to HTML: %s (task: %s)", note_filename_html, task)
+        with open(note_filename_html, "w") as f:
+            f.write('<html><head><style>')
+            f.write('body { font-family: Arial, sans-serif; margin: 20px; }')
+            f.write('h2 { color: #666; }')
+            f.write('.note { margin: 5px 0; padding: 10px; border-radius: 4px; color: #333; background: #fff; }')
+            for task_name, color in self.task_colors.items():
+                f.write(f'.note-{task_name} {{ border-left: 4px solid {color}; }}')
+            f.write('@media (max-width: 600px) { .note { padding: 8px; font-size: 14px; } }')
+            f.write(f'</style></head><body>\n<h2>Notes for {self.today}</h2>\n')
+            for n in self.notes:
+                f.write(f'<div class="note note-{n["task"]}" data-task="{n["task"]}"><p><strong>{n["timestamp"]}</strong> [{n["task"]}]: {n["content"]}</p></div>\n')
+            f.write('</body></html>\n')
+            logger.info("Updated HTML file with %d notes: %s", len(self.notes), note_filename_html)
 
-        # Single XML file for all notes
+        # Write all notes to XML
         note_filename_xml = os.path.join(self.session_dir, "notes.xml")
-        xml_entry = f'  <note task="{task}" timestamp="{timestamp}">{note}</note>\n'
-        if not os.path.exists(note_filename_xml):
-            with open(note_filename_xml, "w") as f:
-                f.write(f'<?xml version="1.0" encoding="UTF-8"?>\n<notes date="{self.today}">\n')
-                logger.info("Initialized XML file: %s", note_filename_xml)
-        with open(note_filename_xml, "a") as f:
-            f.write(xml_entry)
-            logger.info("Appended note to XML: %s (task: %s)", note_filename_xml, task)
+        with open(note_filename_xml, "w") as f:
+            f.write(f'<?xml version="1.0" encoding="UTF-8"?>\n<notes date="{self.today}">\n')
+            for n in self.notes:
+                f.write(f'  <note task="{n["task"]}" timestamp="{n["timestamp"]}">{n["content"]}</note>\n')
+            f.write('</notes>\n')
+            logger.info("Updated XML file with %d notes: %s", len(self.notes), note_filename_xml)
 
-        # Screenshot (still task-specific)
+        # Screenshot
         try:
             screenshot = pyautogui.screenshot()
             screenshot_filename = os.path.join(task_dir, f"screenshot_{task}_{timestamp.replace(':', '-')}.png")
@@ -167,14 +183,21 @@ class DailiesApp:
         report_filename_html = os.path.join(report_dir, f"report_{timestamp}.html")
         with open(report_filename_html, "w") as report:
             report.write('<html><head><style>')
-            report.write('body { font-family: Arial, sans-serif; margin: 20px; }')
-            report.write('h1 { color: #333; } h2 { color: #666; } h3 { color: #999; }')
-            report.write('.note { margin: 5px 0; padding: 5px; border-left: 3px solid #00cccc; color: #333; }')
-            report.write('.task-group { margin-bottom: 20px; }')
+            report.write('body { font-family: Arial, sans-serif; margin: 20px; background: #f9f9f9; }')
+            report.write('h1 { color: #2c3e50; } h2 { color: #34495e; } h3 { color: #7f8c8d; }')
+            report.write('.note { margin: 5px 0; padding: 10px; border-radius: 4px; color: #333; background: #fff; }')
+            for task_name, color in self.task_colors.items():
+                report.write(f'.note-{task_name} {{ border-left: 4px solid {color}; }}')
+            report.write('.task-group { margin-bottom: 25px; padding: 10px; background: #ecf0f1; border-radius: 8px; }')
+            report.write('.summary { border-collapse: collapse; width: 50%; margin-top: 20px; }')
+            report.write('.summary td, .summary th { border: 1px solid #ddd; padding: 8px; text-align: left; }')
+            report.write('.summary th { background: #3498db; color: white; }')
+            report.write('@media (max-width: 600px) { .note { padding: 8px; font-size: 14px; } }')
             report.write('</style></head><body>\n<h1>Daily Report</h1>\n')
             self._write_html_report(report)
             report.write('</body></html>\n')
             logger.info("Generated HTML report: %s", report_filename_html)
+            webbrowser.open(f"file://{report_filename_html}")
 
         # XML Report
         report_filename_xml = os.path.join(report_dir, f"report_{timestamp}.xml")
@@ -192,65 +215,56 @@ class DailiesApp:
         total_time = 0
         afk_time = 0
         all_tasks = self.tasks + ["default"]
-        note_file = os.path.join(self.session_dir, "notes.xml")
-        if os.path.exists(note_file):
-            with open(note_file, "r") as f:
-                lines = f.readlines()
-                notes = [line.strip() for line in lines if "<note" in line]
-                for task in all_tasks:
-                    task_notes = [n for n in notes if f'task="{task}"' in n]
-                    if task_notes:
-                        report.write(f'<div class="task-group">\n<h3>{task.upper()}</h3>\n<ul>\n')
-                        for note in task_notes:
-                            timestamp = note.split('timestamp="')[1].split('"')[0]
-                            content = note.split(">")[1].split("</")[0]
-                            report.write(f'<li><div class="note"><strong>{timestamp}</strong> [{task}]: {content}</div></li>\n')
-                        note_count = len(task_notes)
-                        task_time = note_count * 15
-                        if task == "default" and any("auto-note" in n for n in task_notes):
-                            afk_time += task_time
-                        else:
-                            total_time += task_time
-                        report.write(f'</ul>\n<p>Estimated Time: {task_time} minutes</p>\n')
-                        screenshots = [f for f in os.listdir(os.path.join(self.session_dir, task)) if f.startswith(f"screenshot_{task}")]
-                        if screenshots:
-                            report.write('<p>Screenshots:</p>\n<ul>\n')
-                            for shot in screenshots:
-                                report.write(f'<li>{shot}</li>\n')
-                            report.write('</ul>\n</div>\n')
-        report.write(f'<p><strong>Total Productive Time:</strong> {total_time} minutes</p>\n')
-        report.write(f'<p><strong>Total AFK Time:</strong> {afk_time} minutes</p>\n')
-        report.write(f'<p><strong>Grand Total Time:</strong> {total_time + afk_time} minutes</p>\n')
+        for task in all_tasks:
+            task_notes = [n for n in self.notes if n["task"] == task]
+            if task_notes:
+                report.write(f'<div class="task-group">\n<h3>{task.upper()}</h3>\n<ul>\n')
+                for note in task_notes:
+                    report.write(f'<li><div class="note note-{task}"><strong>{note["timestamp"]}</strong> [{task}]: {note["content"]}</div></li>\n')
+                note_count = len(task_notes)
+                task_time = note_count * 15
+                if task == "default" and any("auto-note" in n["content"] for n in task_notes):
+                    afk_time += task_time
+                else:
+                    total_time += task_time
+                report.write(f'</ul>\n<p>Estimated Time: {task_time} minutes</p>\n')
+                screenshots = [f for f in os.listdir(os.path.join(self.session_dir, task)) if f.startswith(f"screenshot_{task}")]
+                if screenshots:
+                    report.write('<p>Screenshots:</p>\n<ul>\n')
+                    for shot in screenshots:
+                        report.write(f'<li><a href="{task}/{shot}">{shot}</a></li>\n')
+                    report.write('</ul>\n</div>\n')
+        report.write('<table class="summary">\n')
+        report.write('<tr><th>Metric</th><th>Value</th></tr>\n')
+        report.write(f'<tr><td>Total Productive Time</td><td>{total_time} minutes</td></tr>\n')
+        report.write(f'<tr><td>Total AFK Time</td><td>{afk_time} minutes</td></tr>\n')
+        report.write(f'<tr><td>Grand Total Time</td><td>{total_time + afk_time} minutes</td></tr>\n')
+        report.write('</table>\n')
 
     def _write_xml_report(self, report):
         total_time = 0
         afk_time = 0
         all_tasks = self.tasks + ["default"]
-        note_file = os.path.join(self.session_dir, "notes.xml")
-        if os.path.exists(note_file):
-            with open(note_file, "r") as f:
-                lines = f.readlines()
-                notes = [line.strip() for line in lines if "<note" in line]
-                for task in all_tasks:
-                    task_notes = [n for n in notes if f'task="{task}"' in n]
-                    if task_notes:
-                        report.write(f'  <task name="{task}">\n')
-                        for note in task_notes:
-                            report.write(f'    {note}\n')
-                        note_count = len(task_notes)
-                        task_time = note_count * 15
-                        if task == "default" and any("auto-note" in n for n in task_notes):
-                            afk_time += task_time
-                        else:
-                            total_time += task_time
-                        report.write(f'    <time>{task_time}</time>\n')
-                        screenshots = [f for f in os.listdir(os.path.join(self.session_dir, task)) if f.startswith(f"screenshot_{task}")]
-                        if screenshots:
-                            report.write('    <screenshots>\n')
-                            for shot in screenshots:
-                                report.write(f'      <screenshot>{shot}</screenshot>\n')
-                            report.write('    </screenshots>\n')
-                        report.write('  </task>\n')
+        for task in all_tasks:
+            task_notes = [n for n in self.notes if n["task"] == task]
+            if task_notes:
+                report.write(f'  <task name="{task}">\n')
+                for note in task_notes:
+                    report.write(f'    <note task="{task}" timestamp="{note["timestamp"]}">{note["content"]}</note>\n')
+                note_count = len(task_notes)
+                task_time = note_count * 15
+                if task == "default" and any("auto-note" in n["content"] for n in task_notes):
+                    afk_time += task_time
+                else:
+                    total_time += task_time
+                report.write(f'    <time>{task_time}</time>\n')
+                screenshots = [f for f in os.listdir(os.path.join(self.session_dir, task)) if f.startswith(f"screenshot_{task}")]
+                if screenshots:
+                    report.write('    <screenshots>\n')
+                    for shot in screenshots:
+                        report.write(f'      <screenshot>{shot}</screenshot>\n')
+                    report.write('    </screenshots>\n')
+                report.write('  </task>\n')
         report.write(f'  <totals>\n')
         report.write(f'    <productive>{total_time}</productive>\n')
         report.write(f'    <afk>{afk_time}</afk>\n')
@@ -259,22 +273,6 @@ class DailiesApp:
 
     def on_closing(self):
         self.running = False
-        xml_file = os.path.join(self.session_dir, "notes.xml")
-        if os.path.exists(xml_file):
-            with open(xml_file, "r+") as f:
-                content = f.read()
-                if "</notes>" not in content:
-                    f.seek(0, os.SEEK_END)
-                    f.write("</notes>\n")
-                    logger.info("Closed XML file properly: %s", xml_file)
-        html_file = os.path.join(self.session_dir, "notes.html")
-        if os.path.exists(html_file):
-            with open(html_file, "r+") as f:
-                content = f.read()
-                if "</body></html>" not in content:
-                    f.seek(0, os.SEEK_END)
-                    f.write("</body></html>\n")
-                    logger.info("Closed HTML file properly: %s", html_file)
         logger.debug("Agent X: Shutting down operations. Going off the grid.")
         self.root.destroy()
 
