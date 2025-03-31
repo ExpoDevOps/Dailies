@@ -1,13 +1,20 @@
-import tkinter as tk
-from tkinter import messagebox
+import sys
+import os
 import threading
 import time
-import pyautogui
-from datetime import datetime
-import os
 import logging
 import webbrowser
+from datetime import datetime
 from xml.etree import ElementTree as ET
+import pyautogui
+import pygame
+import random
+import win32api
+import ctypes
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+                             QPushButton, QTextEdit, QLabel, QFrame, QMessageBox)
+from PyQt6.QtCore import QTimer, Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QColor, QPalette
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -18,30 +25,110 @@ BASE_DIR = r"G:\expo\Software\Dailies\Dailies\dailies\sessions"
 if not os.path.exists(BASE_DIR):
     os.makedirs(BASE_DIR)
 
+# Lock code setup
+pygame.init()
+monitors = win32api.EnumDisplayMonitors()
+total_width = max(monitor[2][2] for monitor in monitors)
+total_height = max(monitor[2][3] for monitor in monitors)
+total_left = min(monitor[2][0] for monitor in monitors)
+total_top = min(monitor[2][1] for monitor in monitors)
+adjusted_width = total_width - total_left
+adjusted_height = total_height - total_top
+
+BRIGHT_BLUE = (0, 191, 255)
+BLACK = (0, 0, 0)
+
+
+def matrix_effect(screen):
+    screen.fill(BLACK)
+    font = None
+    try:
+        font = pygame.font.Font("digital-7.ttf", 35)
+    except FileNotFoundError:
+        font = pygame.font.SysFont("courier", 35, bold=True)
+        logger.debug("Font 'digital-7.ttf' not found - Morpheus says: 'There is no font!'")
+
+    height = screen.get_height()
+    width = screen.get_width()
+    columns = [random.randint(0, height) for _ in range(width // 15)]
+
+    running = True
+    clock = pygame.time.Clock()
+    lock_time = datetime.now()
+    logger.info(f"sherlock hired at {lock_time.strftime('%d/%m/%Y %H:%M:%S.%f')[:-3]}")
+
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.KEYDOWN:
+                mods = pygame.key.get_mods()
+                if (mods & pygame.KMOD_CTRL and mods & pygame.KMOD_SHIFT and event.key == pygame.K_l):
+                    unlock_time = datetime.now()
+                    duration = unlock_time - lock_time
+                    duration_seconds = duration.total_seconds()
+                    hours = int(duration_seconds // 3600)
+                    minutes = int((duration_seconds % 3600) // 60)
+                    seconds = int(duration_seconds % 60)
+                    milliseconds = int((duration_seconds % 1) * 1000)
+                    logger.info(f"the lady called at {unlock_time.strftime('%d/%m/%Y %H:%M:%S.%f')[:-3]}")
+                    logger.info(f"lock duration: {hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}")
+                    running = False
+
+        screen.fill(BLACK)
+        for i, y_pos in enumerate(columns):
+            if random.random() < 0.1:
+                columns[i] += 30
+            if columns[i] > height:
+                columns[i] = 0
+            char = random.choice("0123456789ABCDEF")
+            brightness = random.randint(200, 255)
+            color = (0, brightness // 2, brightness)
+            text = font.render(char, True, color)
+            screen.blit(text, (i * 25, columns[i]))
+
+        pygame.display.flip()
+        clock.tick(30)
+
+
+def lock_computer():
+    screen = pygame.display.set_mode((adjusted_width, adjusted_height), pygame.NOFRAME)
+    pygame.display.set_caption("git sherlocked")
+    user32 = ctypes.windll.user32
+    hwnd = pygame.display.get_wm_info()['window']
+    user32.SetWindowPos(hwnd, 0, total_left, total_top, 0, 0, 0x0001)
+    try:
+        matrix_effect(screen)
+    finally:
+        pygame.quit()
+
 
 def invert_color(hex_color):
-    """Invert a hex color (e.g., #ff9999 -> #006666)"""
     hex_color = hex_color.lstrip('#')
     r, g, b = tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
-    inv_r = 255 - r
-    inv_g = 255 - g
-    inv_b = 255 - b
-    if inv_r + inv_g + inv_b < 100:  # Too dark
+    inv_r, inv_g, inv_b = 255 - r, 255 - g, 255 - b
+    if inv_r + inv_g + inv_b < 100:
         inv_r, inv_g, inv_b = min(inv_r + 50, 255), min(inv_g + 50, 255), min(inv_b + 50, 255)
     return f"#{inv_r:02x}{inv_g:02x}{inv_b:02x}"
 
 
-class DailiesApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("dailies")
-        self.root.geometry("350x300")
+class LockThread(QThread):
+    finished = pyqtSignal()
+
+    def run(self):
+        lock_computer()
+        self.finished.emit()
+
+
+class DailiesApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Dailies")
+        self.setGeometry(100, 100, 800, 600)
 
         self.today = datetime.now().strftime("%Y-%m-%d")
         self.session_dir = os.path.join(BASE_DIR, self.today)
         os.makedirs(self.session_dir, exist_ok=True)
-        logger.debug("Agent X: Base of operations established at %s", self.session_dir)
-        logger.info("Session directory initialized: %s", self.session_dir)
+        logger.debug("Agent X: Base of operations established at %s - The Force is strong with this one!",
+                     self.session_dir)
 
         self.notes = []
         self.task_colors = {
@@ -54,188 +141,125 @@ class DailiesApp:
             "default": {"bg": "#e6e6e6", "fg": "#000"}
         }
         self.task_times = {task: 0.0 for task in self.task_colors.keys()}
-        self.load_existing_notes()  # Load notes and times
+        self.load_existing_notes()
         self.check_last_shutdown()
 
         self.current_task_start = time.time()
-        self.current_task = tk.StringVar(value="default")
+        self.current_task = "default"
 
-        self.task_frame = tk.Frame(root)
-        self.task_frame.pack(pady=10)
+        # Main widget and layout
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.main_layout = QHBoxLayout(self.central_widget)
 
+        # Left panel (tasks and notes)
+        self.left_panel = QWidget()
+        self.left_layout = QVBoxLayout(self.left_panel)
+        self.main_layout.addWidget(self.left_panel, stretch=3)
+
+        # Task buttons
+        self.task_frame = QWidget()
+        self.task_layout = QHBoxLayout(self.task_frame)
         self.tasks = ["code", "research", "building", "meeting", "field", "social"]
         self.task_buttons = {}
         for task in self.tasks:
-            btn = tk.Button(self.task_frame, text=task,
-                            command=lambda t=task: self.set_task(t),
-                            bg=self.task_colors[task]["bg"], fg=self.task_colors[task]["fg"],
-                            activebackground=invert_color(self.task_colors[task]["bg"]))
-            btn.pack(side=tk.LEFT, padx=5)
+            btn = QPushButton(task)
+            btn.setStyleSheet(
+                f"background-color: {self.task_colors[task]['bg']}; color: {self.task_colors[task]['fg']}")
+            btn.clicked.connect(lambda checked, t=task: self.set_task(t))
+            self.task_layout.addWidget(btn)
             self.task_buttons[task] = btn
+        self.left_layout.addWidget(self.task_frame)
 
-        self.note_label = tk.Label(root, text="speak puny mortal")
-        self.note_label.pack(pady=10)
+        # Note section
+        self.note_label = QLabel("speak puny mortal")
+        self.left_layout.addWidget(self.note_label)
 
-        self.note_text = tk.Text(root, height=5, width=40)
-        self.note_text.pack(pady=10)
+        self.note_text = QTextEdit()
+        self.note_text.setMinimumHeight(200)
+        self.left_layout.addWidget(self.note_text, stretch=1)
 
-        self.save_button = tk.Button(root, text="save", command=self.save_note)
-        self.save_button.pack(pady=5)
+        self.save_button = QPushButton("save")
+        self.save_button.clicked.connect(self.save_note)
+        self.left_layout.addWidget(self.save_button)
 
-        self.status_label = tk.Label(root, text="", fg="cyan")
-        self.status_label.pack(pady=5)
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: cyan")
+        self.left_layout.addWidget(self.status_label)
 
-        self.report_button = tk.Button(root, text="generate report", command=self.generate_report)
-        self.report_button.pack(pady=5)
+        self.report_button = QPushButton("generate report")
+        self.report_button.clicked.connect(self.generate_report)
+        self.left_layout.addWidget(self.report_button)
 
-        self.prompt_active = False
-        self.prompt_time = None
+        # Right panel (tools)
+        self.tool_frame = QFrame()
+        self.tool_frame.setFrameShape(QFrame.Shape.Box)
+        self.tool_layout = QVBoxLayout(self.tool_frame)
+        self.main_layout.addWidget(self.tool_frame, stretch=1)
 
+        self.lock_button = QPushButton("lock")
+        self.lock_button.clicked.connect(self.lock_computer_thread)
+        self.tool_layout.addWidget(self.lock_button)
+        self.tool_layout.addStretch()
+
+        # Timers
         self.running = True
-        self.prompt_thread = threading.Thread(target=self.prompt_periodically)
-        self.prompt_thread.daemon = True
-        self.prompt_thread.start()
-        self.time_log_thread = threading.Thread(target=self.auto_log_time)
-        self.time_log_thread.daemon = True
-        self.time_log_thread.start()
-        logger.debug("Agent X: Surveillance and time logging threads activated.")
-        logger.info("Prompt and time log threads started")
+        self.prompt_timer = QTimer()
+        self.prompt_timer.timeout.connect(self.show_prompt)
+        self.prompt_timer.start(15 * 60 * 1000)  # 15 minutes
 
-    def load_existing_notes(self):
-        note_filename_xml = os.path.join(self.session_dir, "notes.xml")
-        if os.path.exists(note_filename_xml):
-            try:
-                tree = ET.parse(note_filename_xml)
-                root = tree.getroot()
-                for note in root.findall("note"):
-                    task = note.get("task")
-                    timestamp = note.get("timestamp")
-                    content = note.text
-                    self.notes.append({"task": task, "timestamp": timestamp, "content": content})
-                    # Parse time logs
-                    if content.startswith("Time logged:"):
-                        try:
-                            minutes = float(content.split(" ")[2])
-                            self.task_times[task] += minutes
-                        except (IndexError, ValueError):
-                            logger.error("Failed to parse time from note: %s", content)
-                logger.info("Loaded %d notes and updated task times from %s", len(self.notes), note_filename_xml)
-            except ET.ParseError:
-                logger.error("Failed to parse existing notes.xml, starting fresh")
-                self.notes = []
-        else:
-            logger.info("No existing notes.xml found, starting fresh")
+        self.time_log_timer = QTimer()
+        self.time_log_timer.timeout.connect(self.log_time_note)
+        self.time_log_timer.start(60 * 1000)  # 1 minute
 
-    def check_last_shutdown(self):
-        note_filename_xml = os.path.join(self.session_dir, "notes.xml")
-        if os.path.exists(note_filename_xml):
-            try:
-                tree = ET.parse(note_filename_xml)
-                root = tree.getroot()
-                shutdown_notes = [n for n in root.findall("note") if "the program shut down at" in n.text]
-                if shutdown_notes:
-                    last_shutdown_note = shutdown_notes[-1]
-                    last_shutdown = last_shutdown_note.text.split("at ")[1]
-                    logger.info("Last shutdown: %s", last_shutdown)
-                    # Fill gap if same day
-                    shutdown_dt = datetime.strptime(last_shutdown, "%Y-%m-%d %H:%M:%S")
-                    if shutdown_dt.strftime("%Y-%m-%d") == self.today:
-                        gap_minutes = (time.time() - shutdown_dt.timestamp()) / 60.0
-                        self.task_times["default"] += gap_minutes
-                        logger.debug("Added %.1f minutes to default for gap since last shutdown", gap_minutes)
-                else:
-                    logger.info("No previous shutdown note found")
-            except (ET.ParseError, ValueError) as e:
-                logger.error("Failed to parse shutdown time: %s", str(e))
+        logger.debug("Agent X: Surveillance and time logging timers activated - Hasta la vista, idle time!")
 
-    def auto_log_time(self):
-        while self.running:
-            time.sleep(60)  # Log every minute
-            if self.running:
-                self.root.after(0, self.log_time_note)
+    def lock_computer_thread(self):
+        self.lock_thread = LockThread()
+        self.lock_thread.finished.connect(self.on_lock_finished)
+        self.lock_thread.start()
+        logger.debug("Agent X: Computer lock initiated - Engaging stealth mode!")
 
-    def log_time_note(self):
-        if self.current_task_start:
-            elapsed = (time.time() - self.current_task_start) / 60.0
-            task = self.current_task.get()
-            self.task_times[task] += elapsed
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            note_content = f"Time logged: {elapsed:.1f} minutes for {task}"
-            self.notes.append({"task": task, "timestamp": timestamp, "content": note_content})
-            self.update_notes_files()
-            logger.debug("Agent X: Auto-logged %.1f minutes for %s", elapsed, task)
-            self.current_task_start = time.time()
-
-    def update_notes_files(self):
-        note_filename_html = os.path.join(self.session_dir, "notes.html")
-        with open(note_filename_html, "w") as f:
-            f.write('<html><head><style>')
-            f.write('body { font-family: Arial, sans-serif; margin: 20px; }')
-            f.write('h2 { color: #666; }')
-            f.write('.note { margin: 5px 0; padding: 10px; border-radius: 4px; }')
-            for task_name, colors in self.task_colors.items():
-                f.write(f'.note-{task_name} {{ background: {colors["bg"]}; color: {colors["fg"]}; }}')
-            f.write('@media (max-width: 600px) { .note { padding: 8px; font-size: 14px; } }')
-            f.write(f'</style></head><body>\n<h2>Notes for {self.today}</h2>\n')
-            for n in self.notes:
-                if not n["content"].startswith("Time logged:"):  # Hide time logs in HTML
-                    f.write(
-                        f'<div class="note note-{n["task"]}" data-task="{n["task"]}"><p><strong>{n["timestamp"]}</strong> [{n["task"]}]: {n["content"]}</p></div>\n')
-            f.write('</body></html>\n')
-            logger.info("Updated HTML file with %d notes: %s", len(self.notes), note_filename_html)
-
-        note_filename_xml = os.path.join(self.session_dir, "notes.xml")
-        with open(note_filename_xml, "w") as f:
-            f.write(f'<?xml version="1.0" encoding="UTF-8"?>\n<notes date="{self.today}">\n')
-            for n in self.notes:
-                f.write(f'  <note task="{n["task"]}" timestamp="{n["timestamp"]}">{n["content"]}</note>\n')
-            f.write('</notes>\n')
-            logger.info("Updated XML file with %d notes: %s", len(self.notes), note_filename_xml)
+    def on_lock_finished(self):
+        self.status_label.setText("Computer unlocked")
+        QTimer.singleShot(3000, lambda: self.status_label.setText(""))
 
     def set_task(self, task):
         if self.current_task_start:
             elapsed = (time.time() - self.current_task_start) / 60.0
-            self.task_times[self.current_task.get()] += elapsed
-            logger.debug("Agent X: Logged %.1f minutes for %s", elapsed, self.current_task.get())
+            self.task_times[self.current_task] += elapsed
+            logger.debug("Agent X: Logged %.1f minutes for %s - Time Lord approves!", elapsed, self.current_task)
 
-        self.current_task.set(task)
+        self.current_task = task
         self.current_task_start = time.time()
         for btn_task, btn in self.task_buttons.items():
-            btn.config(bg=self.task_colors[btn_task]["bg"])
-        self.task_buttons[task].config(bg=invert_color(self.task_colors[task]["bg"]))
-        logger.debug("Agent X: Mission target switched to %s. Timer started!", task)
-
-    def prompt_periodically(self):
-        while self.running:
-            time.sleep(15 * 60)
-            if self.running:
-                self.root.after(0, self.show_prompt)
-                self.prompt_active = True
-                self.prompt_time = time.time()
-                logger.debug("Agent X: HQ checking in. Time to report, operative!")
-                threading.Thread(target=self.check_prompt_timeout, daemon=True).start()
+            btn.setStyleSheet(
+                f"background-color: {self.task_colors[btn_task]['bg']}; color: {self.task_colors[btn_task]['fg']}")
+        self.task_buttons[task].setStyleSheet(
+            f"background-color: {invert_color(self.task_colors[task]['bg'])}; color: {self.task_colors[task]['fg']}")
+        logger.debug("Agent X: Mission target switched to %s - Engage warp speed!", task)
 
     def show_prompt(self):
-        self.root.lift()
-        self.root.attributes('-topmost', True)
-        messagebox.showinfo("Note Time", "Time to add a note and take a screenshot!")
-        self.root.attributes('-topmost', False)
+        self.raise_()
+        self.activateWindow()
+        QMessageBox.information(self, "Note Time", "Time to add a note and take a screenshot!")
+        self.prompt_active = True
+        self.prompt_time = time.time()
+        QTimer.singleShot(3 * 60 * 1000, self.check_prompt_timeout)
 
     def check_prompt_timeout(self):
-        time.sleep(3 * 60)
-        if self.prompt_active and self.note_text.get("1.0", tk.END).strip() == "":
+        if self.prompt_active and not self.note_text.toPlainText().strip():
             self.save_auto_note()
-            logger.debug("Agent X: Operative gone dark. Deploying auto-note protocol.")
+            logger.debug("Agent X: Operative gone dark - Deploying auto-note protocol, Batman style!")
 
     def save_note(self):
-        note = self.note_text.get("1.0", tk.END).strip()
-        task = self.current_task.get()
+        note = self.note_text.toPlainText().strip()
         if note:
-            self.save_to_task(task, note)
+            self.save_to_task(self.current_task, note)
             self.prompt_active = False
         else:
-            messagebox.showwarning("empty note", "please stop trolling.")
-            logger.debug("Agent X: Empty intel detected. This is no time for games, rookie!")
+            QMessageBox.warning(self, "Empty Note", "please stop trolling.")
+            logger.debug("Agent X: Empty intel detected - This is not the note you’re looking for!")
 
     def save_auto_note(self):
         auto_note = "user did not leave note - leaving auto-note for timestamp and time summation"
@@ -250,7 +274,7 @@ class DailiesApp:
         if self.current_task_start:
             elapsed = (time.time() - self.current_task_start) / 60.0
             self.task_times[task] += elapsed
-            logger.debug("Agent X: Logged %.1f minutes for %s before note save", elapsed, task)
+            logger.debug("Agent X: Logged %.1f minutes for %s - Time logged, Spock says 'Fascinating!'", elapsed, task)
             self.current_task_start = time.time()
 
         self.notes.append({"task": task, "timestamp": timestamp, "content": note})
@@ -260,16 +284,137 @@ class DailiesApp:
             screenshot = pyautogui.screenshot()
             screenshot_filename = os.path.join(task_dir, f"screenshot_{task}_{timestamp.replace(':', '-')}.png")
             screenshot.save(screenshot_filename)
-            logger.debug("Agent X: Snapshot acquired. Evidence locked in at %s.", screenshot_filename)
-            logger.info("Screenshot saved: %s", screenshot_filename)
+            logger.info("Screenshot saved: %s - Captured the moment, Indiana Jones style!", screenshot_filename)
         except Exception as e:
-            messagebox.showwarning("Screenshot Failed", f"Note saved but screenshot failed: {str(e)}")
-            logger.error("Screenshot failed: %s", str(e))
+            QMessageBox.warning(self, "Screenshot Failed", f"Note saved but screenshot failed: {str(e)}")
+            logger.error("Screenshot failed: %s - Gremlins ate the screenshot!", str(e))
 
-        self.note_text.delete("1.0", tk.END)
-        self.status_label.config(text="note saved!")
-        self.root.after(3000, lambda: self.status_label.config(text=""))
-        logger.debug("Agent X: Intel successfully stashed for %s. Mission accomplished!", task)
+        self.note_text.clear()
+        self.status_label.setText("note saved!")
+        QTimer.singleShot(3000, lambda: self.status_label.setText(""))
+
+    def load_existing_notes(self):
+        note_filename_xml = os.path.join(self.session_dir, "notes.xml")
+        if os.path.exists(note_filename_xml):
+            try:
+                tree = ET.parse(note_filename_xml)
+                root = tree.getroot()
+                for note in root.findall("note"):
+                    task = note.get("task")
+                    timestamp = note.get("timestamp")
+                    content = note.text
+                    self.notes.append({"task": task, "timestamp": timestamp, "content": content})
+                    if content.startswith("Time logged:"):
+                        try:
+                            minutes = float(content.split(" ")[2])
+                            self.task_times[task] += minutes
+                        except (IndexError, ValueError):
+                            logger.error("Failed to parse time from note: %s - Time travel glitch detected!", content)
+                logger.info("Loaded %d notes from %s - The archives are complete, Obi-Wan!", len(self.notes),
+                            note_filename_xml)
+            except ET.ParseError:
+                logger.error("Failed to parse existing notes.xml - XML chaos, Serenity now!")
+                self.notes = []
+        else:
+            logger.debug("No notes.xml found - A new hope begins today!")
+
+    def check_last_shutdown(self):
+        note_filename_xml = os.path.join(self.session_dir, "notes.xml")
+        if os.path.exists(note_filename_xml):
+            try:
+                tree = ET.parse(note_filename_xml)
+                root = tree.getroot()
+                shutdown_notes = [n for n in root.findall("note") if "the program shut down at" in n.text]
+                if shutdown_notes:
+                    last_shutdown_note = shutdown_notes[-1]
+                    last_shutdown = last_shutdown_note.text.split("at ")[1]
+                    logger.info("Last shutdown: %s - Found the last log, Sherlock!", last_shutdown)
+                    shutdown_dt = datetime.strptime(last_shutdown, "%Y-%m-%d %H:%M:%S")
+                    if shutdown_dt.strftime("%Y-%m-%d") == self.today:
+                        gap_minutes = (time.time() - shutdown_dt.timestamp()) / 60.0
+                        self.task_times["default"] += gap_minutes
+                        logger.debug("Added %.1f minutes to default for gap - Time gap bridged, Doctor Who style!",
+                                     gap_minutes)
+                else:
+                    logger.info("No previous shutdown note found - Fresh start, Neo!")
+            except (ET.ParseError, ValueError) as e:
+                logger.error("Failed to parse shutdown time: %s - Time vortex malfunction!", str(e))
+
+    def log_time_note(self):
+        if self.current_task_start:
+            elapsed = (time.time() - self.current_task_start) / 60.0
+            task = self.current_task
+            self.task_times[task] += elapsed
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            note_content = f"Time logged: {elapsed:.1f} minutes for {task}"
+            self.notes.append({"task": task, "timestamp": timestamp, "content": note_content})
+            self.update_notes_files()
+            logger.debug("Agent X: Auto-logged %.1f minutes for %s - Time tracked, Tony Stark approved!", elapsed, task)
+            self.current_task_start = time.time()
+
+    def update_notes_files(self):
+        note_filename_xml = os.path.join(self.session_dir, "notes.xml")
+        note_filename_html = os.path.join(self.session_dir, "notes.html")
+
+        # Load existing notes from XML to merge with current session
+        existing_notes = []
+        if os.path.exists(note_filename_xml):
+            try:
+                tree = ET.parse(note_filename_xml)
+                root = tree.getroot()
+                for note in root.findall("note"):
+                    existing_notes.append({
+                        "task": note.get("task"),
+                        "timestamp": note.get("timestamp"),
+                        "content": note.text
+                    })
+                logger.debug("Agent X: Retrieved %d existing notes from XML - Memory banks loaded, R2-D2!",
+                             len(existing_notes))
+            except ET.ParseError:
+                logger.error("Agent X: Failed to parse notes.xml for merging - XML rebellion detected!")
+                existing_notes = []
+
+        # Merge existing notes with new ones, avoiding duplicates
+        all_notes = existing_notes + self.notes
+        # Remove duplicates based on task, timestamp, and content
+        unique_notes = []
+        seen = set()
+        for note in all_notes:
+            note_key = (note["task"], note["timestamp"], note["content"])
+            if note_key not in seen:
+                seen.add(note_key)
+                unique_notes.append(note)
+        logger.debug("Agent X: Merged to %d unique notes - Duplicates zapped, Ghostbusters style!", len(unique_notes))
+
+        # Write to HTML
+        with open(note_filename_html, "w") as f:
+            f.write('<html><head><style>')
+            f.write('body { font-family: Arial, sans-serif; margin: 20px; }')
+            f.write('h2 { color: #666; }')
+            f.write('.note { margin: 5px 0; padding: 10px; border-radius: 4px; }')
+            for task_name, colors in self.task_colors.items():
+                f.write(f'.note-{task_name} {{ background: {colors["bg"]}; color: {colors["fg"]}; }}')
+            f.write('@media (max-width: 600px) { .note { padding: 8px; font-size: 14px; } }')
+            f.write(f'</style></head><body>\n<h2>Notes for {self.today}</h2>\n')
+            for n in unique_notes:
+                if not n["content"].startswith("Time logged:"):
+                    f.write(
+                        f'<div class="note note-{n["task"]}" data-task="{n["task"]}"><p><strong>{n["timestamp"]}</strong> [{n["task"]}]: {n["content"]}</p></div>\n')
+            f.write('</body></html>\n')
+            logger.info("Updated HTML file with %d notes: %s - HTML updated, Spider-Man swings in!", len(unique_notes),
+                        note_filename_html)
+
+        # Write to XML
+        with open(note_filename_xml, "w") as f:
+            f.write(f'<?xml version="1.0" encoding="UTF-8"?>\n<notes date="{self.today}">\n')
+            for n in unique_notes:
+                f.write(f'  <note task="{n["task"]}" timestamp="{n["timestamp"]}">{n["content"]}</note>\n')
+            f.write('</notes>\n')
+            logger.info("Updated XML file with %d notes: %s - XML locked, Vault 101 secure!", len(unique_notes),
+                        note_filename_xml)
+
+        # Update in-memory notes to reflect the full set
+        self.notes = unique_notes
 
     def generate_report(self):
         report_dir = self.session_dir
@@ -277,8 +422,9 @@ class DailiesApp:
 
         if self.current_task_start:
             elapsed = (time.time() - self.current_task_start) / 60.0
-            self.task_times[self.current_task.get()] += elapsed
-            logger.debug("Agent X: Logged %.1f minutes for %s before report", elapsed, self.current_task.get())
+            self.task_times[self.current_task] += elapsed
+            logger.debug("Agent X: Logged %.1f minutes for %s before report - Time logged, Captain Kirk out!", elapsed,
+                         self.current_task)
             self.current_task_start = time.time()
 
         report_filename_html = os.path.join(report_dir, f"report_{timestamp}.html")
@@ -339,7 +485,7 @@ class DailiesApp:
             report.write('});\n')
             report.write('</script>\n')
             report.write('</body></html>\n')
-            logger.info("Generated HTML report with pie chart: %s", report_filename_html)
+            logger.info("Generated HTML report with pie chart: %s - Report beamed up, Scotty!", report_filename_html)
             webbrowser.open(f"file://{report_filename_html}")
 
         report_filename_xml = os.path.join(report_dir, f"report_{timestamp}.xml")
@@ -347,10 +493,10 @@ class DailiesApp:
             report.write(f'<?xml version="1.0" encoding="UTF-8"?>\n<report date="{timestamp}">\n')
             self._write_xml_report(report)
             report.write('</report>\n')
-            logger.info("Generated XML report: %s", report_filename_xml)
+            logger.info("Generated XML report: %s - XML dispatched, Agent 007!", report_filename_xml)
 
-        messagebox.showinfo("report generated", f"Reports saved in HTML and XML formats in {report_dir}")
-        logger.debug("Agent X: Debriefing complete. Reports dispatched to %s.", report_dir)
+        QMessageBox.information(self, "Report Generated", f"Reports saved in HTML and XML formats in {report_dir}")
+        logger.debug("Agent X: Debriefing complete - Reports dispatched to %s, mission accomplished!", report_dir)
 
     def _write_html_report(self, report):
         report.write(f'<h2>Date: {self.today}</h2>\n')
@@ -373,13 +519,21 @@ class DailiesApp:
                     total_time += task_time
 
                 report.write(f'</ul>\n<p>Tracked Time: {task_time:.1f} minutes</p>\n')
-                screenshots = [f for f in os.listdir(os.path.join(self.session_dir, task)) if
-                               f.startswith(f"screenshot_{task}")]
-                if screenshots:
-                    report.write('<p>Screenshots:</p>\n<ul>\n')
-                    for shot in screenshots:
-                        report.write(f'<li><a href="{task}/{shot}">{shot}</a></li>\n')
-                    report.write('</ul>\n</div>\n')
+                task_dir = os.path.join(self.session_dir, task)
+                if os.path.exists(task_dir):
+                    screenshots = [f for f in os.listdir(task_dir) if f.startswith(f"screenshot_{task}")]
+                    if screenshots:
+                        report.write('<p>Screenshots:</p>\n<ul>\n')
+                        for shot in screenshots:
+                            report.write(f'<li><a href="{task}/{shot}">{shot}</a></li>\n')
+                        report.write('</ul>\n')
+                        logger.debug("Agent X: Found %d screenshots for %s - Say cheese, Shutterbug!", len(screenshots),
+                                     task)
+                    else:
+                        logger.debug("Agent X: No screenshots for %s - The camera shy task strikes again!", task)
+                else:
+                    logger.debug("Agent X: No directory for %s - This task is a ghost, Scooby-Doo!", task)
+                report.write('</div>\n')
 
         report.write('<table class="summary">\n')
         report.write('<tr><th>Metric</th><th>Value</th></tr>\n')
@@ -407,13 +561,20 @@ class DailiesApp:
                     total_time += task_time
 
                 report.write(f'    <time>{task_time:.1f}</time>\n')
-                screenshots = [f for f in os.listdir(os.path.join(self.session_dir, task)) if
-                               f.startswith(f"screenshot_{task}")]
-                if screenshots:
-                    report.write('    <screenshots>\n')
-                    for shot in screenshots:
-                        report.write(f'      <screenshot>{shot}</screenshot>\n')
-                    report.write('    </screenshots>\n')
+                task_dir = os.path.join(self.session_dir, task)
+                if os.path.exists(task_dir):
+                    screenshots = [f for f in os.listdir(task_dir) if f.startswith(f"screenshot_{task}")]
+                    if screenshots:
+                        report.write('    <screenshots>\n')
+                        for shot in screenshots:
+                            report.write(f'      <screenshot>{shot}</screenshot>\n')
+                        report.write('    </screenshots>\n')
+                        logger.debug("Agent X: XML logged %d screenshots for %s - Snapshot central!", len(screenshots),
+                                     task)
+                    else:
+                        logger.debug("Agent X: No screenshots in XML for %s - Empty gallery, Picasso!", task)
+                else:
+                    logger.debug("Agent X: No directory for %s in XML - Task vanished, Houdini!", task)
                 report.write('  </task>\n')
 
         report.write(f'  <totals>\n')
@@ -422,14 +583,15 @@ class DailiesApp:
         report.write(f'    <grand>{total_time + afk_time:.1f}</grand>\n')
         report.write(f'  </totals>\n')
 
-    def on_closing(self):
+    def closeEvent(self, event):
         if self.current_task_start:
             elapsed = (time.time() - self.current_task_start) / 60.0
-            self.task_times[self.current_task.get()] += elapsed
+            self.task_times[self.current_task] += elapsed
             timestamp = datetime.now().strftime("%H:%M:%S")
-            self.notes.append({"task": self.current_task.get(), "timestamp": timestamp,
-                               "content": f"Time logged: {elapsed:.1f} minutes for {self.current_task.get()}"})
-            logger.debug("Agent X: Logged %.1f minutes for %s on close", elapsed, self.current_task.get())
+            self.notes.append({"task": self.current_task, "timestamp": timestamp,
+                               "content": f"Time logged: {elapsed:.1f} minutes for {self.current_task}"})
+            logger.debug("Agent X: Logged %.1f minutes for %s on close - Shutdown logged, HAL 9000 out!", elapsed,
+                         self.current_task)
 
         shutdown_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.notes.append({"task": "default", "timestamp": shutdown_time.split(" ")[1],
@@ -437,12 +599,12 @@ class DailiesApp:
         self.update_notes_files()
 
         self.running = False
-        logger.debug("Agent X: Shutting down operations. Going off the grid.")
-        self.root.destroy()
+        logger.debug("Agent X: Shutting down operations - Hasta la vista, baby!")
+        event.accept()
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = DailiesApp(root)
-    root.protocol("WM_DELETE_WINDOW", app.on_closing)
-    root.mainloop()
+    app = QApplication(sys.argv)
+    window = DailiesApp()
+    window.show()
+    sys.exit(app.exec())
