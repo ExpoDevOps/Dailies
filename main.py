@@ -44,8 +44,6 @@ class DailiesApp:
         logger.info("Session directory initialized: %s", self.session_dir)
 
         self.notes = []
-        self.load_existing_notes()
-
         self.task_colors = {
             "code": {"bg": "#ff9999", "fg": "#fff"},
             "research": {"bg": "#ffcc99", "fg": "#fff"},
@@ -55,16 +53,18 @@ class DailiesApp:
             "social": {"bg": "#cc99ff", "fg": "#fff"},
             "default": {"bg": "#e6e6e6", "fg": "#000"}
         }
+        self.task_times = {task: 0.0 for task in self.task_colors.keys()}
+        self.load_existing_notes()  # Load notes and times
+        self.check_last_shutdown()
 
-        self.task_times = {task: 0 for task in self.task_colors.keys()}
-        self.current_task_start = None
+        self.current_task_start = time.time()
+        self.current_task = tk.StringVar(value="default")
 
         self.task_frame = tk.Frame(root)
         self.task_frame.pack(pady=10)
 
         self.tasks = ["code", "research", "building", "meeting", "field", "social"]
         self.task_buttons = {}
-        self.current_task = tk.StringVar(value="default")
         for task in self.tasks:
             btn = tk.Button(self.task_frame, text=task,
                             command=lambda t=task: self.set_task(t),
@@ -95,8 +95,11 @@ class DailiesApp:
         self.prompt_thread = threading.Thread(target=self.prompt_periodically)
         self.prompt_thread.daemon = True
         self.prompt_thread.start()
-        logger.debug("Agent X: Surveillance thread activated. Monitoring commencing.")
-        logger.info("Prompt thread started")
+        self.time_log_thread = threading.Thread(target=self.auto_log_time)
+        self.time_log_thread.daemon = True
+        self.time_log_thread.start()
+        logger.debug("Agent X: Surveillance and time logging threads activated.")
+        logger.info("Prompt and time log threads started")
 
     def load_existing_notes(self):
         note_filename_xml = os.path.join(self.session_dir, "notes.xml")
@@ -109,17 +112,90 @@ class DailiesApp:
                     timestamp = note.get("timestamp")
                     content = note.text
                     self.notes.append({"task": task, "timestamp": timestamp, "content": content})
-                logger.info("Loaded %d existing notes from %s", len(self.notes), note_filename_xml)
+                    # Parse time logs
+                    if content.startswith("Time logged:"):
+                        try:
+                            minutes = float(content.split(" ")[2])
+                            self.task_times[task] += minutes
+                        except (IndexError, ValueError):
+                            logger.error("Failed to parse time from note: %s", content)
+                logger.info("Loaded %d notes and updated task times from %s", len(self.notes), note_filename_xml)
             except ET.ParseError:
                 logger.error("Failed to parse existing notes.xml, starting fresh")
                 self.notes = []
         else:
             logger.info("No existing notes.xml found, starting fresh")
 
-    def set_task(self, task):
-        if self.current_task.get() != "default" and self.current_task_start:
+    def check_last_shutdown(self):
+        note_filename_xml = os.path.join(self.session_dir, "notes.xml")
+        if os.path.exists(note_filename_xml):
+            try:
+                tree = ET.parse(note_filename_xml)
+                root = tree.getroot()
+                shutdown_notes = [n for n in root.findall("note") if "the program shut down at" in n.text]
+                if shutdown_notes:
+                    last_shutdown_note = shutdown_notes[-1]
+                    last_shutdown = last_shutdown_note.text.split("at ")[1]
+                    logger.info("Last shutdown: %s", last_shutdown)
+                    # Fill gap if same day
+                    shutdown_dt = datetime.strptime(last_shutdown, "%Y-%m-%d %H:%M:%S")
+                    if shutdown_dt.strftime("%Y-%m-%d") == self.today:
+                        gap_minutes = (time.time() - shutdown_dt.timestamp()) / 60.0
+                        self.task_times["default"] += gap_minutes
+                        logger.debug("Added %.1f minutes to default for gap since last shutdown", gap_minutes)
+                else:
+                    logger.info("No previous shutdown note found")
+            except (ET.ParseError, ValueError) as e:
+                logger.error("Failed to parse shutdown time: %s", str(e))
+
+    def auto_log_time(self):
+        while self.running:
+            time.sleep(60)  # Log every minute
+            if self.running:
+                self.root.after(0, self.log_time_note)
+
+    def log_time_note(self):
+        if self.current_task_start:
             elapsed = (time.time() - self.current_task_start) / 60.0
-            self.task_times[self.current_task.get()] += min(elapsed, 15)
+            task = self.current_task.get()
+            self.task_times[task] += elapsed
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            note_content = f"Time logged: {elapsed:.1f} minutes for {task}"
+            self.notes.append({"task": task, "timestamp": timestamp, "content": note_content})
+            self.update_notes_files()
+            logger.debug("Agent X: Auto-logged %.1f minutes for %s", elapsed, task)
+            self.current_task_start = time.time()
+
+    def update_notes_files(self):
+        note_filename_html = os.path.join(self.session_dir, "notes.html")
+        with open(note_filename_html, "w") as f:
+            f.write('<html><head><style>')
+            f.write('body { font-family: Arial, sans-serif; margin: 20px; }')
+            f.write('h2 { color: #666; }')
+            f.write('.note { margin: 5px 0; padding: 10px; border-radius: 4px; }')
+            for task_name, colors in self.task_colors.items():
+                f.write(f'.note-{task_name} {{ background: {colors["bg"]}; color: {colors["fg"]}; }}')
+            f.write('@media (max-width: 600px) { .note { padding: 8px; font-size: 14px; } }')
+            f.write(f'</style></head><body>\n<h2>Notes for {self.today}</h2>\n')
+            for n in self.notes:
+                if not n["content"].startswith("Time logged:"):  # Hide time logs in HTML
+                    f.write(
+                        f'<div class="note note-{n["task"]}" data-task="{n["task"]}"><p><strong>{n["timestamp"]}</strong> [{n["task"]}]: {n["content"]}</p></div>\n')
+            f.write('</body></html>\n')
+            logger.info("Updated HTML file with %d notes: %s", len(self.notes), note_filename_html)
+
+        note_filename_xml = os.path.join(self.session_dir, "notes.xml")
+        with open(note_filename_xml, "w") as f:
+            f.write(f'<?xml version="1.0" encoding="UTF-8"?>\n<notes date="{self.today}">\n')
+            for n in self.notes:
+                f.write(f'  <note task="{n["task"]}" timestamp="{n["timestamp"]}">{n["content"]}</note>\n')
+            f.write('</notes>\n')
+            logger.info("Updated XML file with %d notes: %s", len(self.notes), note_filename_xml)
+
+    def set_task(self, task):
+        if self.current_task_start:
+            elapsed = (time.time() - self.current_task_start) / 60.0
+            self.task_times[self.current_task.get()] += elapsed
             logger.debug("Agent X: Logged %.1f minutes for %s", elapsed, self.current_task.get())
 
         self.current_task.set(task)
@@ -127,7 +203,7 @@ class DailiesApp:
         for btn_task, btn in self.task_buttons.items():
             btn.config(bg=self.task_colors[btn_task]["bg"])
         self.task_buttons[task].config(bg=invert_color(self.task_colors[task]["bg"]))
-        logger.debug("Agent X: Mission target switched to %s. Timer started with inverse color!", task)
+        logger.debug("Agent X: Mission target switched to %s. Timer started!", task)
 
     def prompt_periodically(self):
         while self.running:
@@ -173,35 +249,12 @@ class DailiesApp:
 
         if self.current_task_start:
             elapsed = (time.time() - self.current_task_start) / 60.0
-            self.task_times[task] += min(elapsed, 15)
+            self.task_times[task] += elapsed
             logger.debug("Agent X: Logged %.1f minutes for %s before note save", elapsed, task)
             self.current_task_start = time.time()
 
         self.notes.append({"task": task, "timestamp": timestamp, "content": note})
-
-        note_filename_html = os.path.join(self.session_dir, "notes.html")
-        with open(note_filename_html, "w") as f:
-            f.write('<html><head><style>')
-            f.write('body { font-family: Arial, sans-serif; margin: 20px; }')
-            f.write('h2 { color: #666; }')
-            f.write('.note { margin: 5px 0; padding: 10px; border-radius: 4px; }')
-            for task_name, colors in self.task_colors.items():
-                f.write(f'.note-{task_name} {{ background: {colors["bg"]}; color: {colors["fg"]}; }}')
-            f.write('@media (max-width: 600px) { .note { padding: 8px; font-size: 14px; } }')
-            f.write(f'</style></head><body>\n<h2>Notes for {self.today}</h2>\n')
-            for n in self.notes:
-                f.write(
-                    f'<div class="note note-{n["task"]}" data-task="{n["task"]}"><p><strong>{n["timestamp"]}</strong> [{n["task"]}]: {n["content"]}</p></div>\n')
-            f.write('</body></html>\n')
-            logger.info("Updated HTML file with %d notes: %s", len(self.notes), note_filename_html)
-
-        note_filename_xml = os.path.join(self.session_dir, "notes.xml")
-        with open(note_filename_xml, "w") as f:
-            f.write(f'<?xml version="1.0" encoding="UTF-8"?>\n<notes date="{self.today}">\n')
-            for n in self.notes:
-                f.write(f'  <note task="{n["task"]}" timestamp="{n["timestamp"]}">{n["content"]}</note>\n')
-            f.write('</notes>\n')
-            logger.info("Updated XML file with %d notes: %s", len(self.notes), note_filename_xml)
+        self.update_notes_files()
 
         try:
             screenshot = pyautogui.screenshot()
@@ -224,13 +277,15 @@ class DailiesApp:
 
         if self.current_task_start:
             elapsed = (time.time() - self.current_task_start) / 60.0
-            self.task_times[self.current_task.get()] += min(elapsed, 15)
+            self.task_times[self.current_task.get()] += elapsed
             logger.debug("Agent X: Logged %.1f minutes for %s before report", elapsed, self.current_task.get())
             self.current_task_start = time.time()
 
         report_filename_html = os.path.join(report_dir, f"report_{timestamp}.html")
         with open(report_filename_html, "w") as report:
-            report.write('<html><head><style>')
+            report.write('<!DOCTYPE html>\n<html><head>')
+            report.write('<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>')
+            report.write('<style>')
             report.write('body { font-family: Arial, sans-serif; margin: 20px; background: #f9f9f9; }')
             report.write('h1 { color: #2c3e50; } h2 { color: #34495e; } h3 { color: #7f8c8d; }')
             report.write('.note { margin: 5px 0; padding: 10px; border-radius: 4px; }')
@@ -240,11 +295,51 @@ class DailiesApp:
             report.write('.summary { border-collapse: collapse; width: 50%; margin-top: 20px; }')
             report.write('.summary td, .summary th { border: 1px solid #ddd; padding: 8px; text-align: left; }')
             report.write('.summary th { background: #3498db; color: white; }')
+            report.write('#timeChart { max-width: 500px; margin: 20px auto; }')
             report.write('@media (max-width: 600px) { .note { padding: 8px; font-size: 14px; } }')
             report.write('</style></head><body>\n<h1>Daily Report</h1>\n')
             self._write_html_report(report)
+            report.write('<h2>Time Breakdown</h2>\n')
+            report.write('<canvas id="timeChart"></canvas>\n')
+            report.write('<script>\n')
+            report.write('const ctx = document.getElementById("timeChart").getContext("2d");\n')
+            report.write('const timeChart = new Chart(ctx, {\n')
+            report.write('    type: "pie",\n')
+            report.write('    data: {\n')
+            report.write('        labels: [')
+            labels = [f'"{task.capitalize()}"' for task in self.task_colors.keys()]
+            report.write(', '.join(labels) + '],\n')
+            report.write('        datasets: [{\n')
+            report.write('            data: [')
+            times = [f'{self.task_times[task]:.1f}' for task in self.task_colors.keys()]
+            report.write(', '.join(times) + '],\n')
+            report.write('            backgroundColor: [')
+            colors = [f'"{self.task_colors[task]["bg"]}"' for task in self.task_colors.keys()]
+            report.write(', '.join(colors) + '],\n')
+            report.write('            borderColor: "#fff",\n')
+            report.write('            borderWidth: 2\n')
+            report.write('        }]\n')
+            report.write('    },\n')
+            report.write('    options: {\n')
+            report.write('        responsive: true,\n')
+            report.write('        plugins: {\n')
+            report.write('            legend: { position: "top" },\n')
+            report.write('            tooltip: {\n')
+            report.write('                callbacks: {\n')
+            report.write('                    label: function(context) {\n')
+            report.write('                        let label = context.label || "";\n')
+            report.write('                        if (label) label += ": ";\n')
+            report.write('                        label += context.raw + " minutes";\n')
+            report.write('                        return label;\n')
+            report.write('                    }\n')
+            report.write('                }\n')
+            report.write('            }\n')
+            report.write('        }\n')
+            report.write('    }\n')
+            report.write('});\n')
+            report.write('</script>\n')
             report.write('</body></html>\n')
-            logger.info("Generated HTML report: %s", report_filename_html)
+            logger.info("Generated HTML report with pie chart: %s", report_filename_html)
             webbrowser.open(f"file://{report_filename_html}")
 
         report_filename_xml = os.path.join(report_dir, f"report_{timestamp}.xml")
@@ -264,7 +359,7 @@ class DailiesApp:
         all_tasks = self.tasks + ["default"]
 
         for task in all_tasks:
-            task_notes = [n for n in self.notes if n["task"] == task]
+            task_notes = [n for n in self.notes if n["task"] == task and not n["content"].startswith("Time logged:")]
             if task_notes:
                 report.write(f'<div class="task-group">\n<h3>{task.upper()}</h3>\n<ul>\n')
                 for note in task_notes:
@@ -272,7 +367,7 @@ class DailiesApp:
                         f'<li><div class="note note-{task}"><strong>{note["timestamp"]}</strong> [{task}]: {note["content"]}</div></li>\n')
 
                 task_time = self.task_times[task]
-                if task == "default" and any("auto-note" in n["content"] for n in task_notes):
+                if task == "default" and any("auto-note" in n["content"] for n in self.notes if n["task"] == task):
                     afk_time += task_time
                 else:
                     total_time += task_time
@@ -330,8 +425,17 @@ class DailiesApp:
     def on_closing(self):
         if self.current_task_start:
             elapsed = (time.time() - self.current_task_start) / 60.0
-            self.task_times[self.current_task.get()] += min(elapsed, 15)
+            self.task_times[self.current_task.get()] += elapsed
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            self.notes.append({"task": self.current_task.get(), "timestamp": timestamp,
+                               "content": f"Time logged: {elapsed:.1f} minutes for {self.current_task.get()}"})
             logger.debug("Agent X: Logged %.1f minutes for %s on close", elapsed, self.current_task.get())
+
+        shutdown_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.notes.append({"task": "default", "timestamp": shutdown_time.split(" ")[1],
+                           "content": f"the program shut down at {shutdown_time}"})
+        self.update_notes_files()
+
         self.running = False
         logger.debug("Agent X: Shutting down operations. Going off the grid.")
         self.root.destroy()
