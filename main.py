@@ -1,19 +1,14 @@
 import sys
 import os
-import threading
 import time
 import logging
 import webbrowser
 from datetime import datetime
 from xml.etree import ElementTree as ET
 import pyautogui
-import pygame
-import random
-import win32api
-import ctypes
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QTextEdit, QLabel, QFrame, QMessageBox)
-from PyQt6.QtCore import QTimer, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QColor, QPalette
 
 # Set up logging
@@ -25,82 +20,6 @@ BASE_DIR = r"G:\expo\Software\Dailies\Dailies\dailies\sessions"
 if not os.path.exists(BASE_DIR):
     os.makedirs(BASE_DIR)
 
-# Lock code setup
-pygame.init()
-monitors = win32api.EnumDisplayMonitors()
-total_width = max(monitor[2][2] for monitor in monitors)
-total_height = max(monitor[2][3] for monitor in monitors)
-total_left = min(monitor[2][0] for monitor in monitors)
-total_top = min(monitor[2][1] for monitor in monitors)
-adjusted_width = total_width - total_left
-adjusted_height = total_height - total_top
-
-BRIGHT_BLUE = (0, 191, 255)
-BLACK = (0, 0, 0)
-
-
-def matrix_effect(screen):
-    screen.fill(BLACK)
-    font = None
-    try:
-        font = pygame.font.Font("digital-7.ttf", 35)
-    except FileNotFoundError:
-        font = pygame.font.SysFont("courier", 35, bold=True)
-        logger.debug("Font 'digital-7.ttf' not found - Morpheus says: 'There is no font!'")
-
-    height = screen.get_height()
-    width = screen.get_width()
-    columns = [random.randint(0, height) for _ in range(width // 15)]
-
-    running = True
-    clock = pygame.time.Clock()
-    lock_time = datetime.now()
-    logger.info(f"sherlock hired at {lock_time.strftime('%d/%m/%Y %H:%M:%S.%f')[:-3]}")
-
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.KEYDOWN:
-                mods = pygame.key.get_mods()
-                if (mods & pygame.KMOD_CTRL and mods & pygame.KMOD_SHIFT and event.key == pygame.K_l):
-                    unlock_time = datetime.now()
-                    duration = unlock_time - lock_time
-                    duration_seconds = duration.total_seconds()
-                    hours = int(duration_seconds // 3600)
-                    minutes = int((duration_seconds % 3600) // 60)
-                    seconds = int(duration_seconds % 60)
-                    milliseconds = int((duration_seconds % 1) * 1000)
-                    logger.info(f"the lady called at {unlock_time.strftime('%d/%m/%Y %H:%M:%S.%f')[:-3]}")
-                    logger.info(f"lock duration: {hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}")
-                    running = False
-
-        screen.fill(BLACK)
-        for i, y_pos in enumerate(columns):
-            if random.random() < 0.1:
-                columns[i] += 30
-            if columns[i] > height:
-                columns[i] = 0
-            char = random.choice("0123456789ABCDEF")
-            brightness = random.randint(200, 255)
-            color = (0, brightness // 2, brightness)
-            text = font.render(char, True, color)
-            screen.blit(text, (i * 25, columns[i]))
-
-        pygame.display.flip()
-        clock.tick(30)
-
-
-def lock_computer():
-    screen = pygame.display.set_mode((adjusted_width, adjusted_height), pygame.NOFRAME)
-    pygame.display.set_caption("git sherlocked")
-    user32 = ctypes.windll.user32
-    hwnd = pygame.display.get_wm_info()['window']
-    user32.SetWindowPos(hwnd, 0, total_left, total_top, 0, 0, 0x0001)
-    try:
-        matrix_effect(screen)
-    finally:
-        pygame.quit()
-
-
 def invert_color(hex_color):
     hex_color = hex_color.lstrip('#')
     r, g, b = tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
@@ -108,15 +27,6 @@ def invert_color(hex_color):
     if inv_r + inv_g + inv_b < 100:
         inv_r, inv_g, inv_b = min(inv_r + 50, 255), min(inv_g + 50, 255), min(inv_b + 50, 255)
     return f"#{inv_r:02x}{inv_g:02x}{inv_b:02x}"
-
-
-class LockThread(QThread):
-    finished = pyqtSignal()
-
-    def run(self):
-        lock_computer()
-        self.finished.emit()
-
 
 class DailiesApp(QMainWindow):
     def __init__(self):
@@ -196,10 +106,6 @@ class DailiesApp(QMainWindow):
         self.tool_frame.setFrameShape(QFrame.Shape.Box)
         self.tool_layout = QVBoxLayout(self.tool_frame)
         self.main_layout.addWidget(self.tool_frame, stretch=1)
-
-        self.lock_button = QPushButton("lock")
-        self.lock_button.clicked.connect(self.lock_computer_thread)
-        self.tool_layout.addWidget(self.lock_button)
         self.tool_layout.addStretch()
 
         # Timers
@@ -213,16 +119,6 @@ class DailiesApp(QMainWindow):
         self.time_log_timer.start(60 * 1000)  # 1 minute
 
         logger.debug("Agent X: Surveillance and time logging timers activated - Hasta la vista, idle time!")
-
-    def lock_computer_thread(self):
-        self.lock_thread = LockThread()
-        self.lock_thread.finished.connect(self.on_lock_finished)
-        self.lock_thread.start()
-        logger.debug("Agent X: Computer lock initiated - Engaging stealth mode!")
-
-    def on_lock_finished(self):
-        self.status_label.setText("Computer unlocked")
-        QTimer.singleShot(3000, lambda: self.status_label.setText(""))
 
     def set_task(self, task):
         if self.current_task_start:
@@ -601,7 +497,6 @@ class DailiesApp(QMainWindow):
         self.running = False
         logger.debug("Agent X: Shutting down operations - Hasta la vista, baby!")
         event.accept()
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
