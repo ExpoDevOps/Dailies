@@ -7,7 +7,7 @@ from datetime import datetime, date
 from xml.etree import ElementTree as ET
 import pyautogui
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QPushButton, QTextEdit, QLabel, QFrame, QMessageBox, QDateEdit, QDialog, QFormLayout)
+                             QPushButton, QTextEdit, QLabel, QFrame, QMessageBox, QDateEdit, QDialog, QFormLayout, QComboBox)
 from PyQt6.QtCore import QTimer, Qt, QDate
 from PyQt6.QtGui import QColor, QPalette
 
@@ -61,6 +61,7 @@ class DailiesApp(QMainWindow):
 
         self.current_task_start = time.time()
         self.current_task = "default"
+        self.current_subtask = ""
 
         # Shift tracking
         self.shifts = []
@@ -93,6 +94,13 @@ class DailiesApp(QMainWindow):
             self.task_layout.addWidget(btn)
             self.task_buttons[task] = btn
         self.toolbar_layout.addWidget(self.task_frame)
+
+        # Subtask combo box
+        self.subtask_combo = QComboBox()
+        self.subtask_combo.setEditable(True)
+        self.subtask_combo.setPlaceholderText("Enter Subtask")
+        self.subtask_combo.currentTextChanged.connect(self.set_subtask)
+        self.toolbar_layout.addWidget(self.subtask_combo)
 
         # Middle space
         self.toolbar_layout.addStretch()
@@ -170,6 +178,9 @@ class DailiesApp(QMainWindow):
         # Load shifts after UI setup
         self.load_work_shifts()
 
+        # Load recent subtasks
+        self.load_recent_subtasks()
+
         # Timers
         self.running = True
         self.prompt_timer = QTimer()
@@ -188,6 +199,27 @@ class DailiesApp(QMainWindow):
         self.update_worked_time()
 
         logger.debug("Agent X: Surveillance and time logging timers activated - Hasta la vista, idle time!")
+
+    def set_subtask(self, subtask):
+        self.current_subtask = subtask.strip()
+
+    def load_recent_subtasks(self):
+        subtasks = []
+        note_filename_xml = os.path.join(self.session_dir, "notes.xml")
+        if os.path.exists(note_filename_xml):
+            try:
+                tree = ET.parse(note_filename_xml)
+                root = tree.getroot()
+                for note in sorted(root.findall("note"), key=lambda n: n.get("timestamp"), reverse=True):
+                    subtask = note.get("subtask")
+                    if subtask and subtask not in subtasks:
+                        subtasks.append(subtask)
+                        if len(subtasks) == 10:
+                            break
+            except ET.ParseError:
+                logger.error("Failed to parse notes.xml for subtasks")
+        for subtask in subtasks:
+            self.subtask_combo.addItem(subtask)
 
     def work_in(self):
         if self.clock_in_time:
@@ -393,7 +425,13 @@ class DailiesApp(QMainWindow):
             logger.debug("Agent X: Logged %.1f minutes for %s - Time logged, Spock says 'Fascinating!'", elapsed, task)
             self.current_task_start = time.time()
 
-        self.notes.append({"task": task, "timestamp": timestamp, "content": note})
+        subtask = self.current_subtask
+        if subtask and subtask not in [self.subtask_combo.itemText(i) for i in range(self.subtask_combo.count())]:
+            self.subtask_combo.insertItem(0, subtask)
+            if self.subtask_combo.count() > 10:
+                self.subtask_combo.removeItem(10)
+
+        self.notes.append({"task": task, "timestamp": timestamp, "content": note, "subtask": subtask})
         self.update_notes_files()
 
         try:
@@ -411,10 +449,12 @@ class DailiesApp(QMainWindow):
 
         # Log note saved in UI
         now = datetime.now()
-        self.log_ui(f"{now.strftime('%Y-%m-%d %H:%M:%S')} - Note saved in [{task}]")
+        subtask_str = f" /{subtask}" if subtask else ""
+        self.log_ui(f"{now.strftime('%Y-%m-%d %H:%M:%S')} - Note saved in [{task}{subtask_str}]")
 
     def load_existing_notes(self):
         note_filename_xml = os.path.join(self.session_dir, "notes.xml")
+        self.notes = []
         if os.path.exists(note_filename_xml):
             try:
                 tree = ET.parse(note_filename_xml)
@@ -422,8 +462,9 @@ class DailiesApp(QMainWindow):
                 for note in root.findall("note"):
                     task = note.get("task")
                     timestamp = note.get("timestamp")
-                    content = note.text
-                    self.notes.append({"task": task, "timestamp": timestamp, "content": content})
+                    subtask = note.get("subtask", "")
+                    content = note.text if note.text is not None else ""
+                    self.notes.append({"task": task, "timestamp": timestamp, "subtask": subtask, "content": content})
                     if content.startswith("Time logged:"):
                         try:
                             minutes = float(content.split(" ")[2])
@@ -434,9 +475,6 @@ class DailiesApp(QMainWindow):
                             note_filename_xml)
             except ET.ParseError:
                 logger.error("Failed to parse existing notes.xml - XML chaos, Serenity now!")
-                self.notes = []
-        else:
-            logger.debug("No notes.xml found - A new hope begins today!")
 
     def check_last_shutdown(self):
         note_filename_xml = os.path.join(self.session_dir, "notes.xml")
@@ -444,7 +482,7 @@ class DailiesApp(QMainWindow):
             try:
                 tree = ET.parse(note_filename_xml)
                 root = tree.getroot()
-                shutdown_notes = [n for n in root.findall("note") if "the program shut down at" in n.text]
+                shutdown_notes = [n for n in root.findall("note") if "the program shut down at" in (n.text or "")]
                 if shutdown_notes:
                     last_shutdown_note = shutdown_notes[-1]
                     last_shutdown = last_shutdown_note.text.split("at ")[1]
@@ -467,7 +505,7 @@ class DailiesApp(QMainWindow):
             self.task_times[task] += elapsed
             timestamp = datetime.now().strftime("%H:%M:%S")
             note_content = f"Time logged: {elapsed:.1f} minutes for {task}"
-            self.notes.append({"task": task, "timestamp": timestamp, "content": note_content})
+            self.notes.append({"task": task, "timestamp": timestamp, "content": note_content, "subtask": ""})
             self.update_notes_files()
             logger.debug("Agent X: Auto-logged %.1f minutes for %s - Time tracked, Tony Stark approved!", elapsed, task)
             self.current_task_start = time.time()
@@ -486,21 +524,21 @@ class DailiesApp(QMainWindow):
                     existing_notes.append({
                         "task": note.get("task"),
                         "timestamp": note.get("timestamp"),
-                        "content": note.text
+                        "subtask": note.get("subtask", ""),
+                        "content": note.text if note.text is not None else ""
                     })
                 logger.debug("Agent X: Retrieved %d existing notes from XML - Memory banks loaded, R2-D2!",
                              len(existing_notes))
             except ET.ParseError:
                 logger.error("Agent X: Failed to parse notes.xml for merging - XML rebellion detected!")
-                existing_notes = []
 
         # Merge existing notes with new ones, avoiding duplicates
         all_notes = existing_notes + self.notes
-        # Remove duplicates based on task, timestamp, and content
+        # Remove duplicates based on task, timestamp, subtask, and content
         unique_notes = []
         seen = set()
         for note in all_notes:
-            note_key = (note["task"], note["timestamp"], note["content"])
+            note_key = (note["task"], note["timestamp"], note["subtask"], note["content"])
             if note_key not in seen:
                 seen.add(note_key)
                 unique_notes.append(note)
@@ -518,8 +556,9 @@ class DailiesApp(QMainWindow):
             f.write(f'</style></head><body>\n<h2>Notes for {self.today}</h2>\n')
             for n in unique_notes:
                 if not n["content"].startswith("Time logged:"):
+                    subtask_str = f" /{n['subtask']}" if n['subtask'] else ""
                     f.write(
-                        f'<div class="note note-{n["task"]}" data-task="{n["task"]}"><p><strong>{n["timestamp"]}</strong> [{n["task"]}]: {n["content"]}</p></div>\n')
+                        f'<div class="note note-{n["task"]}" data-task="{n["task"]}"><p><strong>{n["timestamp"]}</strong> [{n["task"]}{subtask_str}]: {n["content"]}</p></div>\n')
             f.write('</body></html>\n')
             logger.info("Updated HTML file with %d notes: %s - HTML updated, Spider-Man swings in!", len(unique_notes),
                         note_filename_html)
@@ -528,7 +567,8 @@ class DailiesApp(QMainWindow):
         with open(note_filename_xml, "w") as f:
             f.write(f'<?xml version="1.0" encoding="UTF-8"?>\n<notes date="{self.today}">\n')
             for n in unique_notes:
-                f.write(f'  <note task="{n["task"]}" timestamp="{n["timestamp"]}">{n["content"]}</note>\n')
+                subtask_attr = f' subtask="{n["subtask"]}"' if n["subtask"] else ""
+                f.write(f'  <note task="{n["task"]}" timestamp="{n["timestamp"]}"{subtask_attr}>{n["content"]}</note>\n')
             f.write('</notes>\n')
             logger.info("Updated XML file with %d notes: %s - XML locked, Vault 101 secure!", len(unique_notes),
                         note_filename_xml)
@@ -539,18 +579,23 @@ class DailiesApp(QMainWindow):
     def generate_report(self, report_date=None, session_dir=None, notes=None, task_times=None, shifts=None, total_lunches=0.0):
         if report_date is None:
             report_date = self.today
+        if session_dir is None:
             session_dir = self.session_dir
+        if notes is None:
             notes = self.notes
+        if task_times is None:
             task_times = self.task_times
+        if shifts is None:
             shifts = self.shifts
+        if total_lunches == 0.0:
             total_lunches = self.total_lunches
 
-            if self.current_task_start:
-                elapsed = (time.time() - self.current_task_start) / 60.0
-                self.task_times[self.current_task] += elapsed
-                logger.debug("Agent X: Logged %.1f minutes for %s before report - Time logged, Captain Kirk out!", elapsed,
-                             self.current_task)
-                self.current_task_start = time.time()
+        if self.current_task_start and notes is self.notes:
+            elapsed = (time.time() - self.current_task_start) / 60.0
+            self.task_times[self.current_task] += elapsed
+            logger.debug("Agent X: Logged %.1f minutes for %s before report - Time logged, Captain Kirk out!", elapsed,
+                         self.current_task)
+            self.current_task_start = time.time()
 
         report_filename_html = os.path.join(session_dir, f"report_{report_date}.html")
         with open(report_filename_html, "w") as report:
@@ -644,8 +689,9 @@ class DailiesApp(QMainWindow):
             if task_notes:
                 report.write(f'<div class="task-group">\n<h3>{task.upper()}</h3>\n<ul>\n')
                 for note in task_notes:
+                    subtask_str = f" /{note['subtask']}" if note.get('subtask') else ""
                     report.write(
-                        f'<li><div class="note note-{task}"><strong>{note["timestamp"]}</strong> [{task}]: {note["content"]}</div></li>\n')
+                        f'<li><div class="note note-{task}"><strong>{note["timestamp"]}</strong> [{task}{subtask_str}]: {note["content"]}</div></li>\n')
 
                 task_time = task_times[task]
                 if task == "default" and any("auto-note" in n["content"] for n in notes if n["task"] == task):
@@ -687,7 +733,8 @@ class DailiesApp(QMainWindow):
             if task_notes:
                 report.write(f'  <task name="{task}">\n')
                 for note in task_notes:
-                    report.write(f'    <note task="{task}" timestamp="{note["timestamp"]}">{note["content"]}</note>\n')
+                    subtask_attr = f' subtask="{note["subtask"]}"' if note.get("subtask") else ""
+                    report.write(f'    <note task="{task}" timestamp="{note["timestamp"]}"{subtask_attr}>{note["content"]}</note>\n')
 
                 task_time = task_times[task]
                 if task == "default" and any("auto-note" in n["content"] for n in task_notes):
@@ -756,35 +803,37 @@ class DailiesApp(QMainWindow):
                 for shift in root.findall("shift"):
                     shift_type = shift.get("type")
                     duration = float(shift.get("duration", 0))
-                    past_shifts.append(shift_type)
+                    worked = float(shift.get("worked", 0))
+                    past_shifts.append({"type": shift_type, "duration": duration, "worked": worked})
                     if shift_type == "lunch_in":
                         past_total_lunches += duration
             except ET.ParseError:
                 logger.error("Failed to parse past shifts.xml for %s", report_date)
 
-        try:
-            tree = ET.parse(note_filename_xml)
-            root = tree.getroot()
-            past_notes = []
-            past_task_times = {task: 0.0 for task in self.task_colors.keys()}
-            for note in root.findall("note"):
-                task = note.get("task")
-                timestamp = note.get("timestamp")
-                content = note.text
-                past_notes.append({"task": task, "timestamp": timestamp, "content": content})
-                if content.startswith("Time logged:"):
-                    try:
-                        minutes = float(content.split(" ")[2])
-                        past_task_times[task] += minutes
-                    except (IndexError, ValueError):
-                        logger.error("Failed to parse time from past note: %s", content)
-            logger.info("Loaded %d notes for past report on %s", len(past_notes), report_date)
+        past_notes = []
+        past_task_times = {task: 0.0 for task in self.task_colors.keys()}
+        if os.path.exists(note_filename_xml):
+            try:
+                tree = ET.parse(note_filename_xml)
+                root = tree.getroot()
+                for note in root.findall("note"):
+                    task = note.get("task")
+                    timestamp = note.get("timestamp")
+                    subtask = note.get("subtask", "")
+                    content = note.text if note.text is not None else ""
+                    past_notes.append({"task": task, "timestamp": timestamp, "subtask": subtask, "content": content})
+                    if content.startswith("Time logged:"):
+                        try:
+                            minutes = float(content.split(" ")[2])
+                            past_task_times[task] += minutes
+                        except (IndexError, ValueError):
+                            logger.error("Failed to parse time from past note: %s", content)
+                logger.info("Loaded %d notes for past report on %s", len(past_notes), report_date)
+            except ET.ParseError:
+                logger.error("Failed to parse past notes.xml for %s", report_date)
 
-            self.generate_report(report_date, session_dir, past_notes, past_task_times, past_shifts, past_total_lunches)
-            dialog.close()
-        except ET.ParseError:
-            QMessageBox.warning(self, "Parse Error", f"Failed to parse notes.xml for {report_date}.")
-            logger.error("Failed to parse past notes.xml for %s", report_date)
+        self.generate_report(report_date, session_dir, past_notes, past_task_times, past_shifts, past_total_lunches)
+        dialog.close()
 
     def log_ui(self, message):
         self.log_text.append(message)
@@ -806,13 +855,13 @@ class DailiesApp(QMainWindow):
             self.task_times[self.current_task] += elapsed
             timestamp = datetime.now().strftime("%H:%M:%S")
             self.notes.append({"task": self.current_task, "timestamp": timestamp,
-                               "content": f"Time logged: {elapsed:.1f} minutes for {self.current_task}"})
+                               "content": f"Time logged: {elapsed:.1f} minutes for {self.current_task}", "subtask": ""})
             logger.debug("Agent X: Logged %.1f minutes for %s on close - Shutdown logged, HAL 9000 out!", elapsed,
                          self.current_task)
 
         shutdown_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.notes.append({"task": "default", "timestamp": shutdown_time.split(" ")[1],
-                           "content": f"the program shut down at {shutdown_time}"})
+                           "content": f"the program shut down at {shutdown_time}", "subtask": ""})
         self.update_notes_files()
 
         # Auto-generate report on close
