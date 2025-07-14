@@ -7,7 +7,7 @@ from datetime import datetime, date
 from xml.etree import ElementTree as ET
 import pyautogui
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QPushButton, QTextEdit, QLabel, QFrame, QMessageBox, QDateEdit, QDialog, QFormLayout, QComboBox)
+                             QPushButton, QTextEdit, QLabel, QFrame, QMessageBox, QDateEdit, QDialog, QFormLayout, QComboBox, QCalendarWidget)
 from PyQt6.QtCore import QTimer, Qt, QDate
 from PyQt6.QtGui import QColor, QPalette
 
@@ -37,7 +37,7 @@ class DailiesApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Dailies")
-        self.setGeometry(100, 100, 800, 600)
+        self.setGeometry(100, 100, 800, 800)
 
         self.today = datetime.now().strftime("%Y-%m-%d")
         self.session_dir = os.path.join(BASE_DIR, self.today)
@@ -76,10 +76,10 @@ class DailiesApp(QMainWindow):
         self.main_layout = QHBoxLayout(self.central_widget)
 
         # Left toolbar
-        self.toolbar = QFrame()
-        self.toolbar.setFrameShape(QFrame.Shape.Box)
-        self.toolbar_layout = QVBoxLayout(self.toolbar)
-        self.main_layout.addWidget(self.toolbar, stretch=1)
+        self.left_toolbar = QFrame()
+        self.left_toolbar.setFrameShape(QFrame.Shape.Box)
+        self.left_toolbar_layout = QVBoxLayout(self.left_toolbar)
+        self.main_layout.addWidget(self.left_toolbar, stretch=1)
 
         # Task buttons at top, vertical
         self.task_frame = QWidget()
@@ -93,69 +93,69 @@ class DailiesApp(QMainWindow):
             btn.clicked.connect(lambda checked, t=task: self.set_task(t))
             self.task_layout.addWidget(btn)
             self.task_buttons[task] = btn
-        self.toolbar_layout.addWidget(self.task_frame)
+        self.left_toolbar_layout.addWidget(self.task_frame)
 
         # Subtask combo box
         self.subtask_combo = QComboBox()
         self.subtask_combo.setEditable(True)
         self.subtask_combo.setPlaceholderText("Enter Subtask")
         self.subtask_combo.currentTextChanged.connect(self.set_subtask)
-        self.toolbar_layout.addWidget(self.subtask_combo)
+        self.left_toolbar_layout.addWidget(self.subtask_combo)
 
         # Middle space
-        self.toolbar_layout.addStretch()
+        self.left_toolbar_layout.addStretch()
 
         # Utility buttons at bottom
         # Save button (light blue)
         self.save_button = QPushButton("Save")
         self.save_button.setStyleSheet("background-color: lightblue;")
         self.save_button.clicked.connect(self.save_note)
-        self.toolbar_layout.addWidget(self.save_button)
+        self.left_toolbar_layout.addWidget(self.save_button)
 
         # Generate Report button (light purple)
         self.report_button = QPushButton("Generate Report")
         self.report_button.setStyleSheet("background-color: #CBC3E3;")
         self.report_button.clicked.connect(self.generate_report)
-        self.toolbar_layout.addWidget(self.report_button)
+        self.left_toolbar_layout.addWidget(self.report_button)
 
         # Generate Past Report button (white)
         self.past_report_button = QPushButton("Generate Past Report")
         self.past_report_button.setStyleSheet("background-color: white;")
         self.past_report_button.clicked.connect(self.generate_past_report)
-        self.toolbar_layout.addWidget(self.past_report_button)
+        self.left_toolbar_layout.addWidget(self.past_report_button)
 
         # Work buttons
         self.work_in_btn = QPushButton("WORK IN")
         self.work_in_btn.clicked.connect(self.work_in)
-        self.toolbar_layout.addWidget(self.work_in_btn)
+        self.left_toolbar_layout.addWidget(self.work_in_btn)
 
         self.lunch_out_btn = QPushButton("LUNCH OUT")
         self.lunch_out_btn.setEnabled(False)
         self.lunch_out_btn.clicked.connect(self.lunch_out)
-        self.toolbar_layout.addWidget(self.lunch_out_btn)
+        self.left_toolbar_layout.addWidget(self.lunch_out_btn)
 
         self.lunch_in_btn = QPushButton("LUNCH IN")
         self.lunch_in_btn.setEnabled(False)
         self.lunch_in_btn.clicked.connect(self.lunch_in)
-        self.toolbar_layout.addWidget(self.lunch_in_btn)
+        self.left_toolbar_layout.addWidget(self.lunch_in_btn)
 
         self.work_out_btn = QPushButton("WORK OUT")
         self.work_out_btn.setEnabled(False)
         self.work_out_btn.clicked.connect(self.work_out)
-        self.toolbar_layout.addWidget(self.work_out_btn)
+        self.left_toolbar_layout.addWidget(self.work_out_btn)
 
         self.shift_status_label = QLabel("Not Clocked In")
         self.shift_status_label.setStyleSheet("color: orange")
-        self.toolbar_layout.addWidget(self.shift_status_label)
+        self.left_toolbar_layout.addWidget(self.shift_status_label)
 
         self.worked_time_label = QLabel("Worked: 0h 0m")
         self.worked_time_label.setStyleSheet("color: green")
-        self.toolbar_layout.addWidget(self.worked_time_label)
+        self.left_toolbar_layout.addWidget(self.worked_time_label)
 
-        # Right panel (notes and log)
+        # Middle panel (notes and log)
         self.note_panel = QWidget()
         self.note_layout = QVBoxLayout(self.note_panel)
-        self.main_layout.addWidget(self.note_panel, stretch=3)
+        self.main_layout.addWidget(self.note_panel, stretch=2)  # Reduced stretch to make room
 
         # Note section
         self.note_label = QLabel("speak puny mortal")
@@ -174,6 +174,25 @@ class DailiesApp(QMainWindow):
         self.log_text.setReadOnly(True)
         self.log_text.setMinimumHeight(150)
         self.note_layout.addWidget(self.log_text)
+
+        # Right toolbar
+        self.right_toolbar = QFrame()
+        self.right_toolbar.setFrameShape(QFrame.Shape.Box)
+        self.right_toolbar_layout = QVBoxLayout(self.right_toolbar)
+        self.main_layout.addWidget(self.right_toolbar, stretch=1)
+
+        # Calendar at top
+        self.calendar = QCalendarWidget()
+        self.calendar.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.ISOWeekNumbers)
+        self.calendar.setStyleSheet("""
+            QCalendarWidget QHeaderView::section:vertical {
+                border-right: 1px solid black;
+            }
+        """)
+        self.right_toolbar_layout.addWidget(self.calendar)
+
+        # Middle space for right toolbar
+        self.right_toolbar_layout.addStretch()
 
         # Load shifts after UI setup
         self.load_work_shifts()
@@ -660,8 +679,8 @@ class DailiesApp(QMainWindow):
             report.write('<table class="summary">\n')
             report.write('<tr><th>Metric</th><th>Value</th></tr>\n')
             total_worked = sum(s.get("worked", 0) for s in shifts if s["type"] == "work_out")
-            report.write(f'<tr><td>Total Worked Hours</td><td>{total_worked / 60:.1f}</td></tr>\n')
-            report.write(f'<tr><td>Total Lunch Time (min)</td><td>{total_lunches:.1f}</td></tr>\n')
+            report.write(f'<tr><td>Total Worked</td><td>{format_minutes(total_worked)}</td></tr>\n')
+            report.write(f'<tr><td>Total Lunch Time</td><td>{format_minutes(total_lunches)}</td></tr>\n')
             report.write('</table>\n')
 
             report.write('</body></html>\n')
