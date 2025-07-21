@@ -7,7 +7,7 @@ from datetime import datetime, date
 from xml.etree import ElementTree as ET
 import pyautogui
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QPushButton, QTextEdit, QLabel, QFrame, QMessageBox, QDateEdit, QDialog, QFormLayout, QComboBox, QCalendarWidget)
+                             QPushButton, QTextEdit, QLabel, QFrame, QMessageBox, QDateEdit, QDialog, QFormLayout, QComboBox, QCalendarWidget, QLineEdit, QGridLayout)
 from PyQt6.QtCore import QTimer, Qt, QDate
 from PyQt6.QtGui import QColor, QPalette
 
@@ -194,6 +194,32 @@ class DailiesApp(QMainWindow):
         # Middle space for right toolbar
         self.right_toolbar_layout.addStretch()
 
+        # Calculator at bottom
+        self.expression = ''
+        self.calculator = QWidget()
+        calc_layout = QVBoxLayout(self.calculator)
+        self.display = QLineEdit('0')
+        self.display.setReadOnly(True)
+        self.display.setAlignment(Qt.AlignmentFlag.AlignRight)
+        calc_layout.addWidget(self.display)
+        clear_btn = QPushButton('C')
+        clear_btn.clicked.connect(self.calc_button_clicked)
+        calc_layout.addWidget(clear_btn)
+        grid = QGridLayout()
+        names = [
+            ['7', '8', '9', '/'],
+            ['4', '5', '6', '*'],
+            ['1', '2', '3', '-'],
+            ['0', '.', '=', '+']
+        ]
+        for i in range(4):
+            for j in range(4):
+                btn = QPushButton(names[i][j])
+                btn.clicked.connect(self.calc_button_clicked)
+                grid.addWidget(btn, i, j)
+        calc_layout.addLayout(grid)
+        self.right_toolbar_layout.addWidget(self.calculator)
+
         # Load shifts after UI setup
         self.load_work_shifts()
 
@@ -218,6 +244,24 @@ class DailiesApp(QMainWindow):
         self.update_worked_time()
 
         logger.debug("Agent X: Surveillance and time logging timers activated - Hasta la vista, idle time!")
+
+    def calc_button_clicked(self):
+        button = self.sender()
+        text = button.text()
+        if text == 'C':
+            self.expression = ''
+            self.display.setText('0')
+        elif text == '=':
+            try:
+                result = eval(self.expression)
+                self.display.setText(str(result))
+                self.expression = str(result)
+            except:
+                self.display.setText('Error')
+                self.expression = ''
+        else:
+            self.expression += text
+            self.display.setText(self.expression)
 
     def set_subtask(self, subtask):
         self.current_subtask = subtask.strip()
