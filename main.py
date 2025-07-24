@@ -7,8 +7,8 @@ from datetime import datetime, date
 from xml.etree import ElementTree as ET
 import pyautogui
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QPushButton, QTextEdit, QLabel, QFrame, QMessageBox, QDateEdit, QDialog, QFormLayout, QComboBox, QCalendarWidget, QLineEdit, QGridLayout)
-from PyQt6.QtCore import QTimer, Qt, QDate
+QPushButton, QTextEdit, QLabel, QFrame, QMessageBox, QDateEdit, QDialog, QFormLayout, QComboBox, QCalendarWidget, QLineEdit, QGridLayout)
+from PyQt6.QtCore import QTimer, Qt, QDate, QPoint
 from PyQt6.QtGui import QColor, QPalette
 
 # Set up logging
@@ -32,6 +32,17 @@ def format_minutes(minutes):
     hours = int(minutes // 60)
     mins = int(minutes % 60)
     return f"{hours}h {mins}m"
+
+class EventCalendar(QCalendarWidget):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.event_dates = set()  # set of QDate
+
+    def paintCell(self, painter, rect, date):
+        super().paintCell(painter, rect, date)
+        if date in self.event_dates:
+            painter.setBrush(QColor("red"))
+            painter.drawEllipse(rect.bottomRight() - QPoint(10, 10), 5, 5)  # small red dot at bottom right
 
 class DailiesApp(QMainWindow):
     def __init__(self):
@@ -66,9 +77,9 @@ class DailiesApp(QMainWindow):
         # Shift tracking
         self.shifts = []
         self.clock_in_time = None
-        self.clock_in_display_time = None  # For display
+        self.clock_in_display_time = None # For display
         self.lunch_start = None
-        self.total_lunches = 0.0  # In minutes
+        self.total_lunches = 0.0 # In minutes
 
         # Main widget and layout
         self.central_widget = QWidget()
@@ -155,7 +166,7 @@ class DailiesApp(QMainWindow):
         # Middle panel (notes and log)
         self.note_panel = QWidget()
         self.note_layout = QVBoxLayout(self.note_panel)
-        self.main_layout.addWidget(self.note_panel, stretch=2)  # Reduced stretch to make room
+        self.main_layout.addWidget(self.note_panel, stretch=2) # Reduced stretch to make room
 
         # Note section
         self.note_label = QLabel("speak puny mortal")
@@ -182,14 +193,20 @@ class DailiesApp(QMainWindow):
         self.main_layout.addWidget(self.right_toolbar, stretch=1)
 
         # Calendar at top
-        self.calendar = QCalendarWidget()
+        self.calendar = EventCalendar()
         self.calendar.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.ISOWeekNumbers)
-        self.calendar.setStyleSheet("""
-            QCalendarWidget QHeaderView::section:vertical {
-                border-right: 1px solid black;
-            }
-        """)
+        self.calendar.setStyleSheet("""\
+QCalendarWidget QHeaderView::section:vertical {\
+border-right: 1px solid black;\
+}\
+""")
         self.right_toolbar_layout.addWidget(self.calendar)
+
+        # Events data
+        self.events = {}  # date_str: list of notes
+        self.load_events()
+        self.calendar.event_dates = {QDate.fromString(d, "yyyy-MM-dd") for d in self.events}
+        self.calendar.clicked.connect(self.handle_calendar_click)
 
         # Middle space for right toolbar
         self.right_toolbar_layout.addStretch()
@@ -230,20 +247,76 @@ class DailiesApp(QMainWindow):
         self.running = True
         self.prompt_timer = QTimer()
         self.prompt_timer.timeout.connect(self.show_prompt)
-        self.prompt_timer.start(15 * 60 * 1000)  # 15 minutes
+        self.prompt_timer.start(15 * 60 * 1000) # 15 minutes
 
         self.time_log_timer = QTimer()
         self.time_log_timer.timeout.connect(self.log_time_note)
-        self.time_log_timer.start(60 * 1000)  # 1 minute
+        self.time_log_timer.start(60 * 1000) # 1 minute
 
         self.worked_timer = QTimer()
         self.worked_timer.timeout.connect(self.update_worked_time)
-        self.worked_timer.start(60 * 1000)  # Update every minute
+        self.worked_timer.start(60 * 1000) # Update every minute
 
         self.update_shift_buttons()
         self.update_worked_time()
 
         logger.debug("Agent X: Surveillance and time logging timers activated - Hasta la vista, idle time!")
+
+    def load_events(self):
+        events_file = os.path.join(BASE_DIR, "events.xml")
+        self.events = {}
+        if os.path.exists(events_file):
+            try:
+                tree = ET.parse(events_file)
+                root = tree.getroot()
+                for day in root.findall("day"):
+                    date_str = day.get("date")
+                    notes = [note.text.strip() for note in day.findall("note") if note.text and note.text.strip()]
+                    if notes:
+                        self.events[date_str] = notes
+                logger.info("Loaded events from %s", events_file)
+            except ET.ParseError:
+                logger.error("Failed to parse events.xml")
+
+    def save_events(self):
+        events_file = os.path.join(BASE_DIR, "events.xml")
+        root = ET.Element("events")
+        for date_str, notes in sorted(self.events.items()):
+            day = ET.SubElement(root, "day")
+            day.set("date", date_str)
+            for note in notes:
+                note_elem = ET.SubElement(day, "note")
+                note_elem.text = note
+        tree = ET.ElementTree(root)
+        tree.write(events_file, encoding="utf-8", xml_declaration=True)
+        logger.info("Saved events to %s", events_file)
+
+    def handle_calendar_click(self, qdate):
+        date_str = qdate.toString("yyyy-MM-dd")
+        current_notes = self.events.get(date_str, [])
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Events for {date_str}")
+        layout = QVBoxLayout(dialog)
+        text_edit = QTextEdit()
+        text_edit.setPlainText("\n".join(current_notes))
+        layout.addWidget(text_edit)
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(lambda: self.save_event(date_str, text_edit.toPlainText().strip().split("\n"), dialog))
+        layout.addWidget(save_btn)
+        dialog.exec()
+
+    def save_event(self, date_str, notes, dialog):
+        notes = [n.strip() for n in notes if n.strip()]
+        qdate = QDate.fromString(date_str, "yyyy-MM-dd")
+        if notes:
+            self.events[date_str] = notes
+            self.calendar.event_dates.add(qdate)
+        else:
+            self.events.pop(date_str, None)
+            self.calendar.event_dates.discard(qdate)
+        self.save_events()
+        self.calendar.update()
+        dialog.close()
 
     def calc_button_clicked(self):
         button = self.sender()
@@ -277,8 +350,8 @@ class DailiesApp(QMainWindow):
                     subtask = note.get("subtask")
                     if subtask and subtask not in subtasks:
                         subtasks.append(subtask)
-                        if len(subtasks) == 10:
-                            break
+                    if len(subtasks) == 10:
+                        break
             except ET.ParseError:
                 logger.error("Failed to parse notes.xml for subtasks")
         for subtask in subtasks:
@@ -329,7 +402,7 @@ class DailiesApp(QMainWindow):
         self.lunch_start = now.timestamp()
         self.shifts.append({"type": "lunch_out", "timestamp": now.strftime("%H:%M:%S")})
         self.update_shifts_file()
-        self.prompt_timer.stop()  # Disable prompts during lunch
+        self.prompt_timer.stop() # Disable prompts during lunch
         self.save_to_task("default", f"LUNCH BREAK STARTED at {now.strftime('%H:%M:%S')}")
         self.update_shift_status()
         self.update_shift_buttons()
@@ -345,7 +418,7 @@ class DailiesApp(QMainWindow):
         self.total_lunches += elapsed
         self.shifts.append({"type": "lunch_in", "timestamp": now.strftime("%H:%M:%S"), "duration": elapsed})
         self.update_shifts_file()
-        self.prompt_timer.start(15 * 60 * 1000)  # Re-enable prompts
+        self.prompt_timer.start(15 * 60 * 1000) # Re-enable prompts
         self.save_to_task("default", f"LUNCH BREAK ENDED at {now.strftime('%H:%M:%S')} (Duration: {elapsed:.1f} min)")
         self.lunch_start = None
         self.update_shift_status()
@@ -380,7 +453,7 @@ class DailiesApp(QMainWindow):
         current_lunch = (current_time - self.lunch_start) / 60.0 if self.lunch_start else 0.0
         worked = total_elapsed - self.total_lunches - current_lunch
         if worked < 0:
-            worked = 0.0  # Prevent negative
+            worked = 0.0 # Prevent negative
         self.worked_time_label.setText(f"Worked: {format_minutes(worked)}")
 
     def load_work_shifts(self):
@@ -400,7 +473,7 @@ class DailiesApp(QMainWindow):
                     if shift_type == "work_in":
                         is_clocked_in = True
                         self.clock_in_time = datetime.strptime(f"{self.today} {timestamp}", "%Y-%m-%d %H:%M:%S").timestamp()
-                        self.clock_in_display_time = timestamp[:5]  # HH:MM
+                        self.clock_in_display_time = timestamp[:5] # HH:MM
                     elif shift_type == "work_out":
                         is_clocked_in = False
                     elif shift_type == "lunch_out":
@@ -422,7 +495,7 @@ class DailiesApp(QMainWindow):
         self.update_shift_buttons()
         self.update_worked_time()
         if self.lunch_start:
-            self.prompt_timer.stop()  # Disable if loaded on lunch
+            self.prompt_timer.stop() # Disable if loaded on lunch
 
     def update_shifts_file(self):
         shifts_filename = os.path.join(self.session_dir, "shifts.xml")
@@ -431,9 +504,9 @@ class DailiesApp(QMainWindow):
             for s in self.shifts:
                 duration = s.get("duration", 0)
                 worked = s.get("worked", 0)
-                f.write(f'  <shift type="{s["type"]}" timestamp="{s["timestamp"]}" duration="{duration}" worked="{worked}"></shift>\n')
+                f.write(f' <shift type="{s["type"]}" timestamp="{s["timestamp"]}" duration="{duration}" worked="{worked}"></shift>\n')
             f.write('</shifts>\n')
-            logger.info("Updated shifts XML: %s", shifts_filename)
+        logger.info("Updated shifts XML: %s", shifts_filename)
 
     def set_task(self, task):
         if self.current_task_start:
@@ -623,18 +696,18 @@ class DailiesApp(QMainWindow):
                     f.write(
                         f'<div class="note note-{n["task"]}" data-task="{n["task"]}"><p><strong>{n["timestamp"]}</strong> [{n["task"]}{subtask_str}]: {n["content"]}</p></div>\n')
             f.write('</body></html>\n')
-            logger.info("Updated HTML file with %d notes: %s - HTML updated, Spider-Man swings in!", len(unique_notes),
-                        note_filename_html)
+        logger.info("Updated HTML file with %d notes: %s - HTML updated, Spider-Man swings in!", len(unique_notes),
+                    note_filename_html)
 
         # Write to XML
         with open(note_filename_xml, "w") as f:
             f.write(f'<?xml version="1.0" encoding="UTF-8"?>\n<notes date="{self.today}">\n')
             for n in unique_notes:
                 subtask_attr = f' subtask="{n["subtask"]}"' if n["subtask"] else ""
-                f.write(f'  <note task="{n["task"]}" timestamp="{n["timestamp"]}"{subtask_attr}>{n["content"]}</note>\n')
+                f.write(f' <note task="{n["task"]}" timestamp="{n["timestamp"]}"{subtask_attr}>{n["content"]}</note>\n')
             f.write('</notes>\n')
-            logger.info("Updated XML file with %d notes: %s - XML locked, Vault 101 secure!", len(unique_notes),
-                        note_filename_xml)
+        logger.info("Updated XML file with %d notes: %s - XML locked, Vault 101 secure!", len(unique_notes),
+                    note_filename_xml)
 
         # Update in-memory notes to reflect the full set
         self.notes = unique_notes
@@ -683,38 +756,38 @@ class DailiesApp(QMainWindow):
             report.write('<script>\n')
             report.write('const ctx = document.getElementById("timeChart").getContext("2d");\n')
             report.write('const timeChart = new Chart(ctx, {\n')
-            report.write('    type: "pie",\n')
-            report.write('    data: {\n')
-            report.write('        labels: [')
+            report.write(' type: "pie",\n')
+            report.write(' data: {\n')
+            report.write(' labels: [')
             labels = [f'"{task.capitalize()}"' for task in self.task_colors.keys()]
             report.write(', '.join(labels) + '],\n')
-            report.write('        datasets: [{\n')
-            report.write('            data: [')
+            report.write(' datasets: [{\n')
+            report.write(' data: [')
             times = [f'{task_times[task]:.1f}' for task in self.task_colors.keys()]
             report.write(', '.join(times) + '],\n')
-            report.write('            backgroundColor: [')
+            report.write(' backgroundColor: [')
             colors = [f'"{self.task_colors[task]["bg"]}"' for task in self.task_colors.keys()]
             report.write(', '.join(colors) + '],\n')
-            report.write('            borderColor: "#fff",\n')
-            report.write('            borderWidth: 2\n')
-            report.write('        }]\n')
-            report.write('    },\n')
-            report.write('    options: {\n')
-            report.write('        responsive: true,\n')
-            report.write('        plugins: {\n')
-            report.write('            legend: { position: "top" },\n')
-            report.write('            tooltip: {\n')
-            report.write('                callbacks: {\n')
-            report.write('                    label: function(context) {\n')
-            report.write('                        let label = context.label || "";\n')
-            report.write('                        if (label) label += ": ";\n')
-            report.write('                        label += context.raw + " minutes";\n')
-            report.write('                        return label;\n')
-            report.write('                    }\n')
-            report.write('                }\n')
-            report.write('            }\n')
-            report.write('        }\n')
-            report.write('    }\n')
+            report.write(' borderColor: "#fff",\n')
+            report.write(' borderWidth: 2\n')
+            report.write(' }]\n')
+            report.write(' },\n')
+            report.write(' options: {\n')
+            report.write(' responsive: true,\n')
+            report.write(' plugins: {\n')
+            report.write(' legend: { position: "top" },\n')
+            report.write(' tooltip: {\n')
+            report.write(' callbacks: {\n')
+            report.write(' label: function(context) {\n')
+            report.write(' let label = context.label || "";\n')
+            report.write(' if (label) label += ": ";\n')
+            report.write(' label += context.raw + " minutes";\n')
+            report.write(' return label;\n')
+            report.write(' }\n')
+            report.write(' }\n')
+            report.write(' }\n')
+            report.write(' }\n')
+            report.write(' }\n')
             report.write('});\n')
             report.write('</script>\n')
 
@@ -728,15 +801,15 @@ class DailiesApp(QMainWindow):
             report.write('</table>\n')
 
             report.write('</body></html>\n')
-            logger.info("Generated HTML report with pie chart: %s - Report beamed up, Scotty!", report_filename_html)
-            webbrowser.open(f"file://{report_filename_html}")
+        logger.info("Generated HTML report with pie chart: %s - Report beamed up, Scotty!", report_filename_html)
+        webbrowser.open(f"file://{report_filename_html}")
 
         report_filename_xml = os.path.join(session_dir, f"report_{report_date}.xml")
         with open(report_filename_xml, "w") as report:
             report.write(f'<?xml version="1.0" encoding="UTF-8"?>\n<report date="{report_date}">\n')
             self._write_xml_report(report, notes, task_times, session_dir)
             report.write('</report>\n')
-            logger.info("Generated XML report: %s - XML dispatched, Agent 007!", report_filename_xml)
+        logger.info("Generated XML report: %s - XML dispatched, Agent 007!", report_filename_xml)
 
         QMessageBox.information(self, "Report Generated", f"Reports saved in HTML and XML formats in {session_dir}")
         logger.debug("Agent X: Debriefing complete - Reports dispatched to %s, mission accomplished!", session_dir)
@@ -794,10 +867,10 @@ class DailiesApp(QMainWindow):
         for task in all_tasks:
             task_notes = [n for n in notes if n["task"] == task]
             if task_notes:
-                report.write(f'  <task name="{task}">\n')
+                report.write(f' <task name="{task}">\n')
                 for note in task_notes:
                     subtask_attr = f' subtask="{note["subtask"]}"' if note.get("subtask") else ""
-                    report.write(f'    <note task="{task}" timestamp="{note["timestamp"]}"{subtask_attr}>{note["content"]}</note>\n')
+                    report.write(f' <note task="{task}" timestamp="{note["timestamp"]}"{subtask_attr}>{note["content"]}</note>\n')
 
                 task_time = task_times[task]
                 if task == "default" and any("auto-note" in n["content"] for n in task_notes):
@@ -805,28 +878,28 @@ class DailiesApp(QMainWindow):
                 else:
                     total_time += task_time
 
-                report.write(f'    <time>{task_time:.1f}</time>\n')
+                report.write(f' <time>{task_time:.1f}</time>\n')
                 task_dir = os.path.join(session_dir, task)
                 if os.path.exists(task_dir):
                     screenshots = [f for f in os.listdir(task_dir) if f.startswith(f"screenshot_{task}")]
                     if screenshots:
-                        report.write('    <screenshots>\n')
+                        report.write(' <screenshots>\n')
                         for shot in screenshots:
-                            report.write(f'      <screenshot>{shot}</screenshot>\n')
-                        report.write('    </screenshots>\n')
+                            report.write(f' <screenshot>{shot}</screenshot>\n')
+                        report.write(' </screenshots>\n')
                         logger.debug("Agent X: XML logged %d screenshots for %s - Snapshot central!", len(screenshots),
                                      task)
                     else:
                         logger.debug("Agent X: No screenshots in XML for %s - Empty gallery, Picasso!", task)
                 else:
                     logger.debug("Agent X: No directory for %s in XML - Task vanished, Houdini!", task)
-                report.write('  </task>\n')
+                report.write(' </task>\n')
 
-        report.write(f'  <totals>\n')
-        report.write(f'    <productive>{total_time:.1f}</productive>\n')
-        report.write(f'    <afk>{afk_time:.1f}</afk>\n')
-        report.write(f'    <grand>{total_time + afk_time:.1f}</grand>\n')
-        report.write(f'  </totals>\n')
+        report.write(f' <totals>\n')
+        report.write(f' <productive>{total_time:.1f}</productive>\n')
+        report.write(f' <afk>{afk_time:.1f}</afk>\n')
+        report.write(f' <grand>{total_time + afk_time:.1f}</grand>\n')
+        report.write(f' </totals>\n')
 
     def generate_past_report(self):
         dialog = QDialog(self)
@@ -835,7 +908,7 @@ class DailiesApp(QMainWindow):
 
         date_edit = QDateEdit()
         date_edit.setCalendarPopup(True)
-        date_edit.setDate(QDate.currentDate().addDays(-1))  # Default to yesterday
+        date_edit.setDate(QDate.currentDate().addDays(-1)) # Default to yesterday
         layout.addRow("Select Date:", date_edit)
 
         generate_btn = QPushButton("Generate")
