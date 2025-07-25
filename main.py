@@ -7,8 +7,8 @@ from datetime import datetime, date
 from xml.etree import ElementTree as ET
 import pyautogui
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-QPushButton, QTextEdit, QLabel, QFrame, QMessageBox, QDateEdit, QDialog, QFormLayout, QComboBox, QCalendarWidget, QLineEdit, QGridLayout)
-from PyQt6.QtCore import QTimer, Qt, QDate, QPoint
+QPushButton, QTextEdit, QLabel, QFrame, QMessageBox, QDateEdit, QDialog, QFormLayout, QComboBox, QCalendarWidget, QLineEdit, QGridLayout, QListWidget, QListWidgetItem, QInputDialog, QCheckBox, QColorDialog)
+from PyQt6.QtCore import QTimer, Qt, QDate, QPoint, pyqtSignal
 from PyQt6.QtGui import QColor, QPalette
 
 # Set up logging
@@ -36,13 +36,58 @@ def format_minutes(minutes):
 class EventCalendar(QCalendarWidget):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.event_dates = set()  # set of QDate
+        self.event_dates = set() # set of QDate
+        self.events = {}  # date_str: list of dicts
 
     def paintCell(self, painter, rect, date):
         super().paintCell(painter, rect, date)
-        if date in self.event_dates:
-            painter.setBrush(QColor("red"))
-            painter.drawEllipse(rect.bottomRight() - QPoint(10, 10), 5, 5)  # small red dot at bottom right
+        date_str = date.toString("yyyy-MM-dd")
+        if date_str in self.events:
+            events = self.events[date_str][:4]
+            dot_radius = 3
+            dot_diam = dot_radius * 2
+            spacing = 2
+            total_width = len(events) * dot_diam + (len(events) - 1) * spacing
+            start_x = rect.x() + (rect.width() - total_width) // 2
+            y = rect.y() + rect.height() - dot_radius - 2  # near bottom
+            for i, event in enumerate(events):
+                x = start_x + i * (dot_diam + spacing)
+                painter.setBrush(QColor(event.get('color', '#FF0000')))
+                painter.drawEllipse(x, y, dot_diam, dot_diam)
+
+class EventItemWidget(QWidget):
+    complete_changed = pyqtSignal(bool)
+    text_changed = pyqtSignal(str)
+    color_changed = pyqtSignal(str)
+
+    def __init__(self, text, complete, color_hex, parent=None):
+        super().__init__(parent)
+        self.layout = QHBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.checkbox = QCheckBox()
+        self.checkbox.setChecked(complete)
+        self.checkbox.toggled.connect(self.complete_changed.emit)
+        self.text_edit = QLineEdit(text)
+        self.text_edit.textChanged.connect(self.text_changed.emit)
+        self.color_btn = QPushButton()
+        self.color_btn.setFixedSize(20, 20)
+        self.set_color(color_hex)
+        self.color_btn.clicked.connect(self.pick_color)
+        self.layout.addWidget(self.checkbox)
+        self.layout.addWidget(self.text_edit)
+        self.layout.addStretch()
+        self.layout.addWidget(self.color_btn)
+
+    def pick_color(self):
+        color = QColorDialog.getColor(QColor(self.current_color))
+        if color.isValid():
+            new_color = color.name()
+            self.set_color(new_color)
+            self.color_changed.emit(new_color)
+
+    def set_color(self, hex_color):
+        self.current_color = hex_color
+        self.color_btn.setStyleSheet(f"background-color: {hex_color}; border: 1px solid #000;")
 
 class DailiesApp(QMainWindow):
     def __init__(self):
@@ -202,11 +247,26 @@ border-right: 1px solid black;\
 """)
         self.right_toolbar_layout.addWidget(self.calendar)
 
+        # Event list below calendar
+        self.event_list = QListWidget()
+        self.right_toolbar_layout.addWidget(self.event_list)
+
+        # Buttons for adding and deleting events
+        event_buttons_layout = QHBoxLayout()
+        add_event_btn = QPushButton("Add Event")
+        add_event_btn.clicked.connect(self.add_event)
+        event_buttons_layout.addWidget(add_event_btn)
+        delete_event_btn = QPushButton("Delete Event")
+        delete_event_btn.clicked.connect(self.delete_event)
+        event_buttons_layout.addWidget(delete_event_btn)
+        self.right_toolbar_layout.addLayout(event_buttons_layout)
+
         # Events data
-        self.events = {}  # date_str: list of notes
+        self.events = {} # date_str: list of {'text': str, 'complete': bool}
         self.load_events()
+        self.calendar.events = self.events
         self.calendar.event_dates = {QDate.fromString(d, "yyyy-MM-dd") for d in self.events}
-        self.calendar.clicked.connect(self.handle_calendar_click)
+        self.calendar.selectionChanged.connect(self.update_event_list)
 
         # Middle space for right toolbar
         self.right_toolbar_layout.addStretch()
@@ -260,63 +320,104 @@ border-right: 1px solid black;\
         self.update_shift_buttons()
         self.update_worked_time()
 
+        self.update_event_list()
+
         logger.debug("Agent X: Surveillance and time logging timers activated - Hasta la vista, idle time!")
 
     def load_events(self):
-        events_file = os.path.join(BASE_DIR, "events.xml")
         self.events = {}
-        if os.path.exists(events_file):
-            try:
-                tree = ET.parse(events_file)
-                root = tree.getroot()
-                for day in root.findall("day"):
-                    date_str = day.get("date")
-                    notes = [note.text.strip() for note in day.findall("note") if note.text and note.text.strip()]
-                    if notes:
-                        self.events[date_str] = notes
-                logger.info("Loaded events from %s", events_file)
-            except ET.ParseError:
-                logger.error("Failed to parse events.xml")
+        for date_dir in os.listdir(BASE_DIR):
+            if len(date_dir) == 10 and date_dir.count('-') == 2: # Basic check for YYYY-MM-DD format
+                session_dir = os.path.join(BASE_DIR, date_dir)
+                events_file = os.path.join(session_dir, "events.xml")
+                if os.path.exists(events_file):
+                    try:
+                        tree = ET.parse(events_file)
+                        root = tree.getroot()
+                        event_list = [{'text': event.text.strip(), 'complete': event.get("complete", "false").lower() == "true", 'color': event.get("color", "#FFFFFF")}
+                                      for event in root.findall("event") if event.text and event.text.strip()]
+                        if event_list:
+                            self.events[date_dir] = event_list
+                            logger.info("Loaded events from %s", events_file)
+                    except ET.ParseError:
+                        logger.error("Failed to parse events.xml for %s", date_dir)
 
-    def save_events(self):
-        events_file = os.path.join(BASE_DIR, "events.xml")
-        root = ET.Element("events")
-        for date_str, notes in sorted(self.events.items()):
-            day = ET.SubElement(root, "day")
-            day.set("date", date_str)
-            for note in notes:
-                note_elem = ET.SubElement(day, "note")
-                note_elem.text = note
-        tree = ET.ElementTree(root)
-        tree.write(events_file, encoding="utf-8", xml_declaration=True)
-        logger.info("Saved events to %s", events_file)
-
-    def handle_calendar_click(self, qdate):
-        date_str = qdate.toString("yyyy-MM-dd")
-        current_notes = self.events.get(date_str, [])
-        dialog = QDialog(self)
-        dialog.setWindowTitle(f"Events for {date_str}")
-        layout = QVBoxLayout(dialog)
-        text_edit = QTextEdit()
-        text_edit.setPlainText("\n".join(current_notes))
-        layout.addWidget(text_edit)
-        save_btn = QPushButton("Save")
-        save_btn.clicked.connect(lambda: self.save_event(date_str, text_edit.toPlainText().strip().split("\n"), dialog))
-        layout.addWidget(save_btn)
-        dialog.exec()
-
-    def save_event(self, date_str, notes, dialog):
-        notes = [n.strip() for n in notes if n.strip()]
-        qdate = QDate.fromString(date_str, "yyyy-MM-dd")
-        if notes:
-            self.events[date_str] = notes
-            self.calendar.event_dates.add(qdate)
+    def save_events(self, date_str):
+        event_list = self.events.get(date_str, [])
+        session_dir = os.path.join(BASE_DIR, date_str)
+        os.makedirs(session_dir, exist_ok=True)
+        events_file = os.path.join(session_dir, "events.xml")
+        if event_list:
+            root = ET.Element("events")
+            for event in event_list:
+                event_elem = ET.SubElement(root, "event")
+                event_elem.set("complete", "true" if event['complete'] else "false")
+                event_elem.set("color", event.get('color', "#FFFFFF"))
+                event_elem.text = event['text']
+            tree = ET.ElementTree(root)
+            tree.write(events_file, encoding="utf-8", xml_declaration=True)
+            logger.info("Saved events to %s", events_file)
         else:
-            self.events.pop(date_str, None)
-            self.calendar.event_dates.discard(qdate)
-        self.save_events()
-        self.calendar.update()
-        dialog.close()
+            if os.path.exists(events_file):
+                os.remove(events_file)
+            logger.info("Removed empty events.xml for %s", date_str)
+
+    def update_event_list(self):
+        date_str = self.calendar.selectedDate().toString("yyyy-MM-dd")
+        events = self.events.get(date_str, [])
+        self.event_list.clear()
+        for idx, event in enumerate(events):
+            item = QListWidgetItem()
+            widget = EventItemWidget(event['text'], event['complete'], event.get('color', '#FFFFFF'))
+            widget.complete_changed.connect(lambda checked, i=idx: self.update_event_complete(date_str, i, checked))
+            widget.text_changed.connect(lambda text, i=idx: self.update_event_text(date_str, i, text))
+            widget.color_changed.connect(lambda col, i=idx: self.update_event_color(date_str, i, col))
+            self.event_list.addItem(item)
+            self.event_list.setItemWidget(item, widget)
+            item.setSizeHint(widget.sizeHint())
+
+    def update_event_complete(self, date_str, idx, checked):
+        if date_str in self.events:
+            self.events[date_str][idx]['complete'] = checked
+            self.save_events(date_str)
+
+    def update_event_text(self, date_str, idx, text):
+        if date_str in self.events:
+            self.events[date_str][idx]['text'] = text.strip()
+            self.save_events(date_str)
+
+    def update_event_color(self, date_str, idx, color):
+        if date_str in self.events:
+            self.events[date_str][idx]['color'] = color
+            self.save_events(date_str)
+
+    def add_event(self):
+        date_str = self.calendar.selectedDate().toString("yyyy-MM-dd")
+        text, ok = QInputDialog.getText(self, "Add Event", "Enter event text:")
+        if ok and text.strip():
+            if date_str not in self.events:
+                self.events[date_str] = []
+            self.events[date_str].append({'text': text.strip(), 'complete': False, 'color': '#FFFFFF'})
+            self.save_events(date_str)
+            qdate = QDate.fromString(date_str, "yyyy-MM-dd")
+            self.calendar.event_dates.add(qdate)
+            self.calendar.update()
+            self.update_event_list()
+
+    def delete_event(self):
+        current_row = self.event_list.currentRow()
+        if current_row < 0:
+            return
+        date_str = self.calendar.selectedDate().toString("yyyy-MM-dd")
+        if date_str in self.events:
+            del self.events[date_str][current_row]
+            if not self.events[date_str]:
+                del self.events[date_str]
+                qdate = QDate.fromString(date_str, "yyyy-MM-dd")
+                self.calendar.event_dates.discard(qdate)
+                self.calendar.update()
+            self.save_events(date_str)
+            self.update_event_list()
 
     def calc_button_clicked(self):
         button = self.sender()
@@ -629,10 +730,10 @@ border-right: 1px solid black;\
                         self.task_times["default"] += gap_minutes
                         logger.debug("Added %.1f minutes to default for gap - Time gap bridged, Doctor Who style!",
                                      gap_minutes)
-                else:
-                    logger.info("No previous shutdown note found - Fresh start, Neo!")
             except (ET.ParseError, ValueError) as e:
                 logger.error("Failed to parse shutdown time: %s - Time vortex malfunction!", str(e))
+        else:
+            logger.info("No previous shutdown note found - Fresh start, Neo!")
 
     def log_time_note(self):
         if self.current_task_start:
@@ -750,7 +851,7 @@ border-right: 1px solid black;\
             report.write('#timeChart { max-width: 500px; margin: 20px auto; }')
             report.write('@media (max-width: 600px) { .note { padding: 8px; font-size: 14px; } }')
             report.write('</style></head><body>\n<h1>Daily Report</h1>\n')
-            self._write_html_report(report, report_date, notes, task_times)
+            self._write_html_report(report, report_date, notes, task_times, session_dir)
             report.write('<h2>Time Breakdown</h2>\n')
             report.write('<canvas id="timeChart"></canvas>\n')
             report.write('<script>\n')
@@ -807,14 +908,14 @@ border-right: 1px solid black;\
         report_filename_xml = os.path.join(session_dir, f"report_{report_date}.xml")
         with open(report_filename_xml, "w") as report:
             report.write(f'<?xml version="1.0" encoding="UTF-8"?>\n<report date="{report_date}">\n')
-            self._write_xml_report(report, notes, task_times, session_dir)
+            self._write_xml_report(report, report_date, notes, task_times, session_dir)
             report.write('</report>\n')
         logger.info("Generated XML report: %s - XML dispatched, Agent 007!", report_filename_xml)
 
         QMessageBox.information(self, "Report Generated", f"Reports saved in HTML and XML formats in {session_dir}")
         logger.debug("Agent X: Debriefing complete - Reports dispatched to %s, mission accomplished!", session_dir)
 
-    def _write_html_report(self, report, report_date, notes, task_times):
+    def _write_html_report(self, report, report_date, notes, task_times, session_dir):
         report.write(f'<h2>Date: {report_date}</h2>\n')
         total_time = 0
         afk_time = 0
@@ -836,7 +937,7 @@ border-right: 1px solid black;\
                     total_time += task_time
 
                 report.write(f'</ul>\n<p>Tracked Time: {task_time:.1f} minutes</p>\n')
-                task_dir = os.path.join(self.session_dir, task)
+                task_dir = os.path.join(session_dir, task)
                 if os.path.exists(task_dir):
                     screenshots = [f for f in os.listdir(task_dir) if f.startswith(f"screenshot_{task}")]
                     if screenshots:
@@ -859,7 +960,16 @@ border-right: 1px solid black;\
         report.write(f'<tr><td>Grand Total Time</td><td>{total_time + afk_time:.1f} minutes</td></tr>\n')
         report.write('</table>\n')
 
-    def _write_xml_report(self, report, notes, task_times, session_dir):
+        events = self.events.get(report_date, [])
+        if events:
+            report.write('<h2>Events</h2>\n<ul>\n')
+            for event in events:
+                status = "Completed" if event['complete'] else "Pending"
+                color = event.get('color', '#FFFFFF')
+                report.write(f'<li style="background-color: {color}; padding: 5px;">{event["text"]} ({status})</li>\n')
+            report.write('</ul>\n')
+
+    def _write_xml_report(self, report, report_date, notes, task_times, session_dir):
         total_time = 0
         afk_time = 0
         all_tasks = self.tasks + ["default"]
@@ -894,6 +1004,13 @@ border-right: 1px solid black;\
                 else:
                     logger.debug("Agent X: No directory for %s in XML - Task vanished, Houdini!", task)
                 report.write(' </task>\n')
+
+        events = self.events.get(report_date, [])
+        if events:
+            report.write(' <events>\n')
+            for event in events:
+                report.write(f' <event complete="{str(event["complete"]).lower()}" color="{event.get("color", "#FFFFFF")}">{event["text"]}</event>\n')
+            report.write(' </events>\n')
 
         report.write(f' <totals>\n')
         report.write(f' <productive>{total_time:.1f}</productive>\n')
